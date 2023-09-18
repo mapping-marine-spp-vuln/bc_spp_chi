@@ -1,0 +1,96 @@
+---
+title: "prepare Table report - species inclusion by phylum/class/order"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 7)
+
+library(terra)
+library(oharac)
+library(data.table)
+library(tidyverse)
+library(cowplot)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Prep table for supplement
+
+# Methods
+
+Load in species info; group by phylum, class, order and count species inclusion.  Use prepped data from Fig. 1 plot.
+
+```{r}
+worms_info <- read_csv(here('_data/worms_spp_bc.csv')) %>%
+  mutate(class = case_when(class == 'actinopterygii' & order == 'acipenseriformes' ~ 'chondrostei',
+                           class == 'actinopterygii' ~ 'teleostei',
+                           TRUE ~ class))
+
+summary_df <- worms_info %>%
+  mutate(order = ifelse(phylum == 'chordata', order, '-')) %>%
+  ### update actinopterygii giga class to classes
+  group_by(phylum) %>%
+  mutate(n_phl = n_distinct(species)) %>%
+  group_by(class) %>%
+  mutate(n_cls = n_distinct(species)) %>%
+  group_by(order) %>%
+  mutate(order = ifelse(n_distinct(species) < 20 & class == 'teleostei', 'other teleostei', order)) %>%
+  group_by(order) %>%
+  mutate(n_ord = n_distinct(species)) %>%
+  group_by(phylum, class, order) %>%
+  summarize(n_phl = unique(n_phl),
+            n_cls = unique(n_cls),
+            n_ord = unique(n_ord), .groups = 'drop') %>%
+  mutate(n_ord = ifelse(order == '-', NA, n_ord))
+  
+phylum_out_df <- summary_df %>%
+  group_by(phylum, class, n_cls) %>%
+  ungroup() %>%
+  arrange(phylum, desc(n_cls)) %>%
+  select(phylum, class, n_cls) %>%
+  distinct()
+
+
+vert_out_df <- summary_df %>%
+  filter(phylum == 'chordata') %>%
+  mutate(class = factor(class, levels = phylum_out_df$class) %>% fct_drop()) %>%
+  arrange(class, desc(n_ord)) %>%
+  mutate(order = fct_inorder(order),
+         order = fct_relevel(order, 'other teleostei', after = Inf)) %>%
+  arrange(class, order) %>%
+  select(class, order, n_cls, n_ord)
+
+write_csv(phylum_out_df, 'table_spp_by_phylum.csv')
+write_csv(vert_out_df, 'table_spp_verts_by_class.csv')
+```
+
+## Representation by phylum and class
+
+```{r}
+knitr::kable(phylum_out_df, col.names = c('Phylum', 'Class', '# in class'))
+```
+
+## Representation by class and order (for vertebrates)
+
+```{r}
+knitr::kable(vert_out_df, col.names = c('Class', 'Order', '# in class', '# in order'))
+```
+

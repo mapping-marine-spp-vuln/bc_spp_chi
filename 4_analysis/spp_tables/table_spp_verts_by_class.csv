@@ -1,0 +1,25 @@
+class,order,n_cls,n_ord
+teleostei,perciformes,592,253
+teleostei,lophiiformes,592,42
+teleostei,stomiiformes,592,32
+teleostei,myctophiformes,592,28
+teleostei,pleuronectiformes,592,27
+teleostei,scombriformes,592,21
+teleostei,gadiformes,592,20
+teleostei,other teleostei,592,169
+aves,charadriiformes,65,35
+aves,procellariiformes,65,12
+aves,anseriformes,65,9
+aves,gaviiformes,65,4
+aves,podicipediformes,65,3
+aves,pelecaniformes,65,2
+mammalia,cetartiodactyla,38,27
+mammalia,carnivora,38,11
+elasmobranchii,rajiformes,28,14
+elasmobranchii,lamniformes,28,5
+elasmobranchii,carcharhiniformes,28,4
+elasmobranchii,squaliformes,28,3
+elasmobranchii,hexanchiformes,28,2
+myxini,myxiniformes,4,4
+chondrostei,acipenseriformes,2,2
+reptilia,testudines,1,1
