@@ -1,0 +1,377 @@
+---
+title: "Determine temperature rise stressor per spp"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(terra)
+library(sf)
+library(tidyverse)
+library(here)
+library(oharac)
+
+source(here('common_fxns.R'))
+source('stressor_fxns.R') ### in same dir as this Rmd
+
+```
+
+# Summary
+
+Using a map of mean SST over the past five years (2016-2020), identify species-specific stressor based on the species' thermal envelope (determined from AquaMaps envelopes or IUCN-similar envelopes).
+
+For each unique thermal envelope (i.e., multiple species might share the same absolute max and preferred max):
+
+* Identify the base stressor layer using Mel's function to convert mean temperature to 0-1 stressor
+    * If mean temp exceeds absolute max, stressor = 1
+    * If mean temp is below preferred max, stressor = 0
+    * Otherwise stressor scales linearly with temperature from preferred max to absolute max
+    * Not going to worry about temps below preferred/absolute min temps
+* For each species with this thermal envelope, mask the base stressor layer with the species range and save out as .csv
+
+# Data
+
+* Species range maps from AquaMaps and IUCN
+* Species thermal envelopes from AquaMaps and calculated for IUCN
+* Temperature rise data from ???
+
+# Methods
+
+## Read in mean temp map
+
+This is stored on Mazu at `/home/shares/ohi/stressors_2021/_dataprep/SST_past_present/final_avg_tmp/sst_avg_2016-2020.tif`.  Reproject to bc CRS at 1 km resolution.  Then mask out sea ice cells.
+
+```{r read and project mean sst raster}
+mean_T_f <- 'int/mean_T_rast_bc_1km.tif'
+
+if(!file.exists(mean_T_f)) {
+  mean_T_rast_mol <- rast(file.path('/home/shares/ohi/stressors_2021/_dataprep', 
+                                'SST_past_present/final_avg_tmp/sst_avg_2016-2020.tif'))
+  # plot(mean_T_rast_mol, axes = FALSE, main = 'Mean annual T, °C')
+  # class       : SpatRaster 
+  # dimensions  : 1814, 3617, 1  (nrow, ncol, nlyr)
+  # resolution  : 10000, 10000  (x, y)
+  # extent      : -18086282, 18083718, -9069952, 9070048  (xmin, xmax, ymin, ymax)
+  # coord. ref. : +proj=moll +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs 
+  # source      : sst_avg_2016-2020.tif 
+  # name        : sst_avg_2016-2020 
+  # min value   :         -1.548435 
+  # max value   :         30.611729
+  
+  ocean_r <- rast(here('_spatial/ocean_bc_1km.tif'))
+
+  mean_T_rast_bc <- project(mean_T_rast_mol, ocean_r, method = 'near')
+
+  mean_T_rast_mask <- mean_T_rast_bc %>%
+    mask(ocean_r) %>%
+    round(2) ### 0.1dC should be adequate precision
+  
+  writeRaster(mean_T_rast_mask, mean_T_f, overwrite = TRUE)
+}
+
+mean_T_rast <- rast(mean_T_f)
+
+plot(mean_T_rast, axes = FALSE, main = 'Mean annual T, °C')
+
+```
+
+## Determine thermal envelope for species
+
+For AquaMaps read from their envelope data (using `get_am_spp_envelopes()` helper function); for IUCN, read from results of script `6a_thermal_tolerances_estimate_iucn.Rmd`.
+
+Here we are calculating for all AquaMaps and IUCN maps, regardless of whether there is overlap or the number of occur_cells is too low.  We can always ignore those maps later.
+
+```{r}
+am_dir <- '/home/shares/ohi/spp_vuln/aquamaps_2021'
+
+get_am_spp_envelopes <- function() {
+  env_file <- file.path(am_dir, 'species_envelope_summary.csv')
+  
+  ### create a tidy summary of environmental envelopes
+  if(!file.exists(env_file)) { ### create from scratch
+    env_info <- data.table::fread(file.path(am_dir, 'ver10_2019_hspen.csv')) %>%
+      janitor::clean_names() %>%
+      rename(am_sid = species_id)
+
+    params <- c('depth', 'temp', 'salinity', 'prim_prod', 'ice_con', 'oxy', 'land_dist')
+    prm_or <- paste0(params, collapse = '|')
+    dist_vals <- c('min', 'pref_min', 'mean', 'pref_max', 'max')
+    env_sum_df <- env_info %>%
+      rename(depth_mean = mean_depth) %>%
+      select(am_sid, contains(params)) %>%
+      gather(param_full, value, -am_sid) %>%
+      mutate(param = str_extract(param_full, prm_or),
+             dist = str_replace(param_full, paste0('(', prm_or, ')_'), '')) %>%
+      select(-param_full) %>%
+      spread(dist, value) %>%
+      filter(yn == 1) %>%
+      select(-yn) %>%
+      gather(dist, value, -am_sid, -param) %>%
+      mutate(dist = factor(dist, levels = dist_vals),
+             value = ifelse(param == 'depth', log10(value + 1), value),
+             param = ifelse(param == 'depth', 'log10_depth', param))
+
+    write_csv(env_sum_df, env_file)
+  }
+  env_df <- data.table::fread(env_file) %>%
+    mutate(am_sid = tolower(am_sid))
+  return(env_df)
+}
+```
+
+```{r get thermal envelopes}
+am_sids  <- read_csv(here('_data/am_spp_bc.csv')) %>%
+  select(sciname, am_sid) %>%
+  distinct()
+
+spp_info <- get_spp_info() %>%
+  select(sciname = species, iucn_sid, src, map_f) %>%
+  distinct() %>%
+  left_join(am_sids, by = 'sciname')
+
+
+am_T_env <- get_am_spp_envelopes() %>%
+  filter(param == 'temp' & dist %in% c('max', 'pref_max')) %>%
+  spread(dist, value) %>%
+  inner_join(am_sids, by = 'am_sid') %>%
+  select(am_sid, sciname, T_max_a = max, T_max_p = pref_max)
+
+iucn_derived_T_envs <- read_csv(here('1_setup/stressors/int/iucn_spp_thermal_env.csv')) %>%
+  select(iucn_sid, iucn_tmaxa = T_max_a, iucn_tmaxp = T_max_p) %>%
+  filter(iucn_sid %in% spp_info$iucn_sid)
+
+iucn_T_env <- spp_info %>%
+  left_join(am_T_env, by = c('am_sid', 'sciname')) %>%
+  left_join(iucn_derived_T_envs, by = c('iucn_sid')) %>%
+  mutate(T_max_a = ifelse(is.na(T_max_a), iucn_tmaxa, T_max_a),
+         T_max_p = ifelse(is.na(T_max_p), iucn_tmaxp, T_max_p)) %>%
+  filter(src == 'iucn') %>%
+  select(iucn_sid, sciname, T_max_a, T_max_p) %>%
+  distinct()
+
+T_env_all <- bind_rows(am_T_env, iucn_T_env)
+
+hist(T_env_all$T_max_a, main = 'T max, absolute')
+hist(T_env_all$T_max_p, main = 'T max, preferred')
+hist(T_env_all$T_max_a - T_env_all$T_max_p, main = 'T max, abs - pref')
+```
+
+
+## Process species pressures
+
+Group species into similar thermal niches.  Round `T_max_p` down to the nearest 0.5°, round `T_max_a` up to the nearest 0.5°, then group by `T_max_a` and `T_max_p`.  This floor/ceiling rounding will expand the thermal envelope slightly, resulting in a more conservative estimate of pressure.  Grouping like this results in 1385 distinct groups with similar thermal niches.
+
+For each niche group:
+
+* calculate the pressure map using the `calc_T_max_prs()` function defined below
+* convert the resulting pressure map to a data.frame based on cell ID and mean annual temp
+* loop over each species in the niche:
+    * read in the species distribution as a .csv from the appropriate source (AquaMaps or IUCN)
+    * intersect the species distribution with the temperature pressure map for this thermal niche
+    * write out the resulting csv of cell_id and pressure, with species info in filename.
+
+### Function `calc_T_max_prs()`
+
+To determine the pressure on a species based on its thermal tolerance and mean annual temperature in a cell:
+
+* If the mean annual temperature meets or exceeds the species' T_max_a, pressure = 1.
+* If the mean annual temperature meets or is lower than the species' T_max_p, pressure = 0.
+* If the mean annual temperature T_max_p < mean annual T < T_max_a, scale linearly from 0 to 1.
+
+Note that because we're focusing on bc regions, many spp will not be thermally stressed from above.  Group all species whose preferred min is above the max observed in the mean annual T raster.
+
+```{r set up groups}
+### before rounding, 10175 gps
+### * after rounding to 0.1° 6191 gps
+### * after rounding to 0.25° 3397 gps
+### * after rounding to 0.5° 1415 gps
+### * rounding pref down and abs up (floor/ceiling), 462 gps
+# gp_check <- T_env_all %>%
+#   # mutate(T_max_a = round(T_max_a, 1), T_max_p = round(T_max_p, 1)) %>%
+#   # mutate(T_max_a = ceiling(4 * T_max_a) / 4, T_max_p = floor(4 * T_max_p) / 4) %>%
+#   mutate(T_max_a = ceiling(2 * T_max_a) / 2, T_max_p = floor(2 * T_max_p) / 2) %>%
+#   # mutate(T_max_a = ceiling(T_max_a), T_max_p = floor(T_max_p)) %>%
+#   group_by(T_max_a, T_max_p) %>%
+#   summarize(n = n())
+
+max_T_bc <- minmax(mean_T_rast)[2]
+
+### For synonymous spp with multiple AquaMaps instances, take mean of temps
+T_env_rounded <- T_env_all  %>%
+  mutate(src = ifelse(is.na(am_sid), 'iucn', 'am'),
+         id  = ifelse(src == 'iucn', iucn_sid, str_replace_all(sciname, '[^a-z]+', '_'))) %>%
+  group_by(sciname, id, src) %>%
+  summarize(T_max_a = mean(T_max_a), T_max_p = mean(T_max_p),
+            .groups = 'drop') %>%
+  mutate(T_max_a = ceiling(2 * T_max_a) / 2, T_max_p = floor(2 * T_max_p) / 2) %>%
+  ### combine all spp with T_max_p greater than observed max mean T
+  mutate(T_max_a = ifelse(T_max_p > max_T_bc, max_T_bc, T_max_a),
+         T_max_p = ifelse(T_max_p > max_T_bc, max_T_bc, T_max_p))
+  
+gps_df <- T_env_rounded %>%
+  group_by(T_max_a, T_max_p) %>%
+  summarize(n_spp = n(), .groups = 'drop') %>%
+  arrange(desc(n_spp)) %>%
+  mutate(gp = 1:n())
+
+T_env_to_process <- T_env_rounded %>%
+  left_join(gps_df, by = c('T_max_a', 'T_max_p')) %>%
+  filter(!is.na(sciname)) %>% 
+  distinct()
+
+```
+
+```{r define helper functions}
+calc_T_max_prs <- function(abs, pref, rast = mean_T_rast) {
+  #t0 <- Sys.time()
+  pressure <- (1/(abs - pref))*(rast - pref)
+  pressure[pressure < 0] <- 0
+  pressure[pressure > 1] <- 1
+  return(pressure %>% setNames('therm_prs'))
+  #Sys.time()-t0
+}
+
+# tmp <- calc_T_max_prs(abs = 30, pref = 5, rast = mean_T_rast)
+# plot(tmp)
+
+get_spp_map <- function(map_f) {
+  
+  if(!file.exists(map_f)) stop('Map does not exist: ', basename(map_f))
+  
+  src <- basename(map_f) %>% str_remove('_.+')
+  spp_map <- read_csv(map_f, show_col_types = FALSE) 
+
+  ### filter for valid cells - AM prob ≥ 0.50, IUCN presence != 5
+  prob_thresh <- 0.50
+  if(src == 'am') {
+    spp_map <- spp_map %>% filter(prob >= prob_thresh)
+  } else {
+    spp_map <- spp_map %>% filter(presence != 5)
+  }
+  
+  return(spp_map %>% select(cell_id))
+}
+
+process_spp_therm_str <- function(j, spp_env_df, t_prs_df, out_fstem) {
+  # for(j in 1:nrow(spp_envs)) { 
+  ### j <- 1
+  ### j <- 1261
+  ### get species range map
+  
+  spp_env <- spp_env_df[j, ]
+  spp <- spp_env$sciname
+  src <- spp_env$src
+  id  <- spp_env$id
+  
+  out_f <- sprintf(out_fstem, src, id)
+  
+  if(file.exists(out_f)) {
+    message('File ', basename(out_f), ' exists... skipping!')
+    return(NULL)
+  }
+  
+  ### file doesn't exist; process it!
+  message('Processing ', basename(out_f), ' (', j, ' of ', nrow(spp_envs),
+    ' in group ', i, ' of ', nrow(gps_df), ')...')
+      
+  map_stem <- here_anx('spp_maps_bc/%s_spp_bc_%s.csv')
+  map_f <- sprintf(map_stem, src, id)
+  spp_map <- get_spp_map(map_f)
+  
+  ### inner join with temp pressure dataframe
+  spp_temp_df <- spp_map %>%
+    oharac::dt_join(t_prs_df, by = 'cell_id', type = 'inner') %>%
+    distinct()
+  
+  if(nrow(spp_temp_df) == 0) {
+    spp_temp_df <- data.frame(cell_id = -1, 
+                              therm_prs = NA)
+    message('... Zero length result for ', basename(out_f))
+  } else {
+    message('... results df for ', spp, ' from ', src, ' contains ', nrow(spp_temp_df),
+            ' rows...')
+  }
+  
+  ### to check results:
+  # x <- rast(here('_spatial/ocean_bc_1km.tif'))
+  # y <- x %>% setValues(1:ncell(.))
+  # df <- spp_temp_df %>% complete(cell_id = 1:ncell(y)) %>% arrange(cell_id)
+  # z <- y %>% setValues(df$therm_prs)
+  # plot(z)
+  
+  ### write out to file
+  write_csv(spp_temp_df, out_f)
+  
+  return(basename(out_f)) ### to check for errors in result...
+  
+}
+```
+
+```{r process em all}
+ocean_r <- rast(here('_spatial/ocean_bc_1km.tif'))
+out_fstem <- here_anx('stressors/max_temp/%s_spp_max_temp_%s.csv')
+# zxcv <- list.files(dirname(out_fstem), full.names = TRUE, pattern = 'spp_max_temp')
+# r <- ocean_r %>% setValues(1:ncell(.))
+# df <- read_csv(zxcv[25]) %>% complete(cell_id = 1:ncell(r))
+# x <- r %>% setValues(df$therm_prs)
+
+ptm <- proc.time()
+
+for(i in 1:nrow(gps_df)) {
+  ### i <- 13
+  ### i <- 300
+  spp_envs <- T_env_to_process %>%
+    filter(gp == i)
+  
+  tmax_a <- spp_envs$T_max_a[1] ### should all be identical
+  tmax_p <- spp_envs$T_max_p[1] ### should all be identical
+  
+  out_fs <- sprintf(out_fstem, spp_envs$src, spp_envs$id)
+  if(all(file.exists(out_fs))) {
+    message(i, ' of ', nrow(gps_df), ': file exists for all ', nrow(spp_envs),
+            ' species with thermal niche from ', tmax_p, ' to ', tmax_a, '°C... skipping this group!')
+    next()
+  } else {
+    spp_envs <- spp_envs[!file.exists(out_fs), ]
+  }
+  
+  ### not all files exist for this group:
+  message(i, ' of ', nrow(gps_df), ': Processing ', nrow(spp_envs), 
+          ' species with thermal niche from ', tmax_p, ' to ', tmax_a, '°C...')
+  
+  t_prs_i_rast <- calc_T_max_prs(abs = tmax_a, pref = tmax_p)
+  ### plot(t_prs_i_rast, axes = FALSE, main = sprintf('Therm prs for range %s to %s', tmax_p, tmax_a))
+  
+  t_prs_i_df <- data.frame(values(t_prs_i_rast),
+                           cell_id   = 1:ncell(t_prs_i_rast)) %>%
+    filter(!is.na(therm_prs)) %>%
+    mutate(therm_prs = round(therm_prs, 5)) ### drop unreasonable precision
+
+  tmp <- parallel::mclapply(1:nrow(spp_envs), mc.cores = 4, 
+           FUN = process_spp_therm_str,
+             t_prs_df   = t_prs_i_df,
+             out_fstem  = out_fstem,
+             spp_env_df = spp_envs
+           )
+}
+
+ptm <- proc.time() - ptm
+```
+
+Elapsed time for processing: `r round(ptm[3], 3)` seconds.
+

@@ -1,0 +1,263 @@
+---
+title: "Stressors: targeted fishing by species and cell - rescale stressor"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_depth: 1
+    toc_float: yes
+    number_sections: false
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(oharac) ### remotes::install_github('oharac/oharac')
+  ### includes some helper functions, e.g., dt_join
+library(tidyverse)
+library(here)
+
+source(here('common_fxns.R'))
+source('stressor_fxns.R') ### in same dir as this Rmd
+```
+
+# Summary
+
+Read in rasters (as csvs) of NPP-adjusted fisheries catch per species per cell.  Identify a reference point and rescale stressor layers from 0-1 for each species.
+
+# Data
+
+Data from
+
+* Watson, R.A. and Tidd, A.N. (2018) Mapping nearly a century and a half of global marine fishing: 1869 to 2015. Marine Policy 93, 171-177
+* Watson, R. (2017) A database of global marine commercial, small-scale, illegal and unreported fisheries catch 1950-2014. Nature Scientific Data 4 (170039).
+
+# Methods
+
+* For each species, considering its entire range, identify the various percentiles of NPP-adjusted total catch. 
+* Examine different threshold options to see what makes most sense as a threshold for rescaling.  Here we have chosen the highest value for 90th percentile across all species as a cutoff for overfishing, based on ability to distinguish overfishing on RAM stocks.
+* For targeted species whose highest catch value falls below that threshold, normalize to their own 99th percentile.
+* Normalize all species fishing stressor maps using that reference system and save out.
+
+## Identify reference point
+
+Take each species fishing map, expand out to include unfished cells in the species' range, and then determine the various quantiles of catch for each species, to explore potential cutoffs.
+
+```{r set up vars}
+watson_maps_lookup <- read_csv(here('1_setup/stressors/int/watson_maps_lookup.csv'))
+
+spp_vec <- watson_maps_lookup$spp %>% unique() %>% sort()
+
+npp_catch_dir <- here_anx('stressors/fishing/3_npp_norm_catch_by_spp_bc')
+
+npp_catch_fs <- list.files(npp_catch_dir, full.names = TRUE)
+
+# check <- list.files(here_anx('stressors/fishing/2_total_catch_by_spp_cell'))
+# check_spp <- str_remove_all(check, '.+_spp_catch_|.csv')
+# npp_catch_spp <- str_remove_all(npp_catch_fs, '.+_spp_npp_catch_|_bc.csv')
+# check_spp[!check_spp %in% npp_catch_spp]
+### all spp accounted for! (some with cell_id -1 flags for missing maps)
+```
+
+``` {r calc ref point by range}
+calc_quantiles_range <- function(f, fstem) {
+  # f <- npp_catch_fs[1]
+  i <- which(f == npp_catch_fs)
+  
+  s_snake <- basename(f) %>% 
+    str_remove_all('.+spp_npp_catch_|_bc.csv')
+  s <- s_snake %>% str_replace_all('_', ' ')
+  src <- basename(f) %>% str_remove_all('_spp_npp_catch.+')
+
+  out_f <- sprintf(fstem, s_snake, src)
+
+  if(!file.exists(out_f)) {
+    message('Processing ', s, ' (', i, ' of ', length(npp_catch_fs), ') based on ', toupper(src), ' rangemaps...')
+    catch_df <- data.table::fread(f)
+    
+    if(src == 'am') {
+      range_df <- data.table::fread(sprintf(here_anx('spp_maps_bc', '%s_spp_bc_%s.csv'), src, s_snake))
+    } else {
+      ### src is IUCN, and file(s) by ID - perhaps multiple IDs for a given spp?
+      iucn_ids <- watson_maps_lookup %>%
+        filter(spp == s) %>%
+        .$iucn_sid %>% unique()
+      range_fs <- sprintf(here_anx('spp_maps_bc', '%s_spp_bc_%s.csv'), src, iucn_ids)
+      range_df <- lapply(range_fs, read_csv, show_col_types = FALSE) %>%
+        bind_rows() %>%
+        distinct()
+    }
+    
+    ### blank vector of spp range (begin with catch = 0)
+    v <- rep(0, times = n_distinct(range_df$cell_id))
+    if(nrow(catch_df) > 0) {
+      ### create vector of total normalized catch
+      npp_catch_sum <- catch_df %>%
+        mutate(tot_norm_catch = ben_norm_catch + pel_norm_catch) %>%
+        .$tot_norm_catch
+      tot_npp_catch <- sum(npp_catch_sum)
+      tot_catch <- sum(catch_df$ben_tot_catch + catch_df$pel_tot_catch)
+      
+      ### overwrite catch values onto catch-relevant spp range
+      v[1:length(npp_catch_sum)] <- npp_catch_sum
+    } else {
+      # v is unchanged, all zeros
+      tot_catch <- 0
+      tot_npp_catch <- 0
+    }
+    z <- quantile(v, c(.50, .9, .95, .99, .999, 1.0))
+    df <- as.matrix(z) %>% t() %>%
+      as.data.frame() %>%
+      mutate(spp = s,
+             source = src,
+             tot_catch = tot_catch,
+             tot_npp_catch = tot_npp_catch)
+    write_csv(df, out_f)
+  }
+}
+```
+
+Currently using global reference points... 
+``` {r}
+
+fishing_ref_f <- here('1_setup/stressors/int/fish_npp_catch_ref_point_global.csv')
+# unlink(fishing_ref_f)
+if(!file.exists(fishing_ref_f)) {
+  
+  ref_tmp_fstem <- here('tmp', 'fishing_str_ref_pts', 'fishing_str_ref_%s_%s.csv')
+  ### zxcv <- list.files(dirname(ref_tmp_fstem), full.names = TRUE)
+  ### unlink(zxcv)
+  
+  tmp <- parallel::mclapply(npp_catch_fs, mc.cores = 16,
+                            FUN = calc_quantiles_range,
+                            fstem = ref_tmp_fstem)
+
+  tmp_fs <- list.files(here('tmp', 'fishing_str_ref_pts'),
+                       pattern = 'fishing_str_ref', full.names = TRUE)
+  # unlink(tmp_fs)
+  fish_qtile_range_df <- parallel::mclapply(tmp_fs, 
+                                            FUN = data.table::fread, 
+                                            mc.cores = 24) %>%
+    data.table::rbindlist() %>%
+    janitor::clean_names() %>%
+    arrange(desc(x99_percent))
+
+  write_csv(fish_qtile_range_df, fishing_ref_f)
+}
+
+qtile_results <- read_csv(fishing_ref_f) %>%
+  group_by(spp) %>%
+  filter(n() == 1 | source == 'iucn') %>%
+    ### pref IUCN for spp with both sources
+  ungroup() %>%
+  arrange(desc(x90_percent))
+knitr::kable(head(qtile_results, 20), digits = 1)
+
+```
+
+
+### Check thresholds vs RAM
+
+see global analysis for check against RAM
+
+## Rescale NPP-adjusted targeted catch layers
+
+Using this reference system, rescale NPP-adjusted catch layers for each species, and save out the finalized stressor file for each.
+
+```{r rescale catch and mask ice then save}
+
+rescale_catch <- function(df) {
+  # df <- rescale_todo_df %>% slice(1)
+  out_f <- df$rescaled_f
+  
+  if(!file.exists(out_f)) {
+    in_f <- df$npp_f
+    ref_pt <- df$spp_ref_pt
+
+    message('Rescaling catch based on ', basename(in_f), 
+            ', \n    ref pt = ', round(ref_pt, 2), ' t/log(NPP)... (', df$i, 
+            ' of ', nrow(rescale_todo_df), ')')
+    
+    catch_df <- read_csv(in_f, show_col_types = FALSE)
+    
+    if(catch_df$cell_id[1] == -1) {
+      ### no valid catch; return a zero result (using cell_id = -1 as flag)
+      rescaled_df <- data.frame(cell_id = -1, rescaled_catch = 0)
+    } else {
+      rescaled_df <- catch_df %>%
+        ### recalc based on ref pt
+        mutate(tot_c = pel_norm_catch + ben_norm_catch,
+               rescaled_catch = case_when(ref_pt == 0 ~ 0,
+                                          tot_c < ref_pt ~ tot_c / ref_pt, 
+                                          tot_c >= ref_pt ~ 1,
+                                          TRUE ~ NA_real_)) %>%
+        select(cell_id, rescaled_catch)
+    }
+    write_csv(rescaled_df, out_f)
+    
+    return(nrow(rescaled_df))
+  } else {
+    # message('... File exists: ', basename(out_f), '... skipping!')
+  }
+}
+```
+
+``` {r}
+rescaled_fstem <- here_anx('stressors/fishing/4_rescaled_catch_by_spp_cell',
+                           '%s_spp_rescaled_catch_%s.csv')
+
+### max ref point from global analysis:
+ref_pt <- max(qtile_results$x90_percent, na.rm = TRUE)
+
+reference_df <- data.frame(npp_f = npp_catch_fs) %>%
+  mutate(source = str_remove(basename(npp_f), '_spp_npp_catch.+'),
+         spp = str_remove_all(basename(npp_f), '.+_spp_npp_catch_|_bc.csv'),
+         rescaled_f = sprintf(rescaled_fstem, source, spp),
+         spp_clean = str_replace_all(spp, '_', ' ')) %>%
+  left_join(qtile_results, by = c('spp_clean' = 'spp')) %>%
+  mutate(spp_ref_pt = ifelse(x99_percent > ref_pt, ref_pt, x99_percent),
+         ### some spp with no 99.9%ile catch - just use max as ref
+         spp_ref_pt = ifelse(spp_ref_pt < 1e-6, x100_percent, spp_ref_pt)) %>%
+  select(spp, npp_f, rescaled_f, spp_ref_pt)
+
+rescale_todo_df <- reference_df %>%
+  filter(!file.exists(rescaled_f))
+
+### y <- list.files(dirname(rescaled_fstem), full.names = TRUE)
+### unlink(y)
+
+tmp <- parallel::mclapply(1:nrow(rescale_todo_df), 
+                          mc.cores = 16,
+                          FUN = function(i) { ### i <- 2
+                            rescale_catch(df = rescale_todo_df %>% slice(i) %>% mutate(i))
+                          })
+
+# df <- data.frame(s = spp_vec, f = sprintf(rescaled_fstem, spp_vec)) %>%
+#   mutate(f = str_replace_all(f, ' ', '_'))
+# fs <- list.files(dirname(rescaled_fstem), full.names = TRUE)
+# missing_spp <- df %>%
+#   filter(!f %in% fs) %>%
+#   .$s
+# 
+# tmp <- parallel::mclapply(missing_spp, mc.cores = 24, 
+#                           FUN = rescale_catch, ref_pt = ref_pt)
+
+```
+
+```{r check files}
+fs <- list.files(dirname(rescaled_fstem), full.names = TRUE)
+df <- data.frame(f = basename(fs), fsize = file.size(fs)) %>%
+  arrange(desc(fsize))
+
+knitr::kable(head(df, 10))
+```
+
+

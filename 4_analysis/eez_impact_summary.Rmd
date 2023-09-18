@@ -1,0 +1,167 @@
+---
+title: "Compare cumulative impact across EEZs"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 7)
+
+library(terra)
+library(oharac)
+library(data.table)
+library(tidyverse)
+library(cowplot)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Examine distribution of impacts within EEZ - broken down by stressor, mean across cells, both unweighted and weighted by species richness.
+
+# Methods
+
+## Load cumulative impact rasters
+
+Build up an analysis dataframe including impact maps for all stressors.  Include additional layers to facilitate examination of impacts by marine ecoregion.
+
+* Load all impact rasters, plus nspp raster and EEZ raster.
+* Crop out all cells not in EEZ
+* Group by EEZ and summarize both spp-weighted and unweighted mean impact values across all stressors.
+
+```{r build impact dataframe}
+imp_fs <- list.files(here_anx('_output/impact_maps/impact_maps_species'), 
+                     pattern = 'impact.+_mean.tif',
+                     full.names = TRUE)
+
+lyr_names <- basename(imp_fs) %>%
+  str_remove_all('impact_spp_|_x_.+|_mean|.tif')
+imp_stack_all <- rast(imp_fs) %>%
+  setNames(lyr_names)
+imp_stack_all[is.na(imp_stack_all)] <- 0
+
+nspp_r <- rast(here('_output/nspp_maps/species_richness.tif')) %>%
+  setNames('nspp')
+eez_r <- rast(here('_spatial/eez_polar_1km.tif')) %>%
+  setNames('eez')
+
+arctic_r <- rast(here('_spatial/ocean_polar_1km.tif')) %>%
+  mask(rast(here('_spatial/seaice_mask_0.8.tif')), inverse = TRUE) %>%
+  setNames('arctic_mask')
+
+full_stack <- c(imp_stack_all, nspp_r, eez_r) %>%
+  mask(arctic_r)
+
+imp_df <- as.data.frame(full_stack)
+```
+
+```{r}
+imp_by_eez_unwt_df <- imp_df %>%
+  select(-nspp) %>%
+  group_by(eez) %>%
+  summarize(across(.cols = everything(), .fns = mean,
+                   .names = '{.col}_mean', na.rm = TRUE),
+            ncell = n())
+
+imp_by_eez_nspp_wt_df <- imp_df %>%
+  group_by(eez) %>%
+  summarize(across(-nspp, 
+                   .fns = ~ sum(.x * nspp, na.rm = TRUE) / sum(nspp[!is.na(.x)]),
+                   .names = '{.col}_nspp_wt_mean'),
+            nspp_mean = mean(nspp),
+            ncell = n()) 
+```
+
+## Examine impacts by EEZ
+
+```{r set up impacts by EEZ}
+arctic_eez_vec <- imp_by_eez_unwt_df$eez %>% unique()
+eez_names_df <- read_csv(here('_spatial/eez_rgns/rgn_names_ohi.csv')) %>%
+  janitor::clean_names() %>%
+  filter(rgn_id %in% arctic_eez_vec) %>%
+  filter(rgn_id < 255)
+
+eez_chi_df <- imp_by_eez_unwt_df %>%
+  pivot_longer(cols = c(-eez, -ncell)) %>%
+  group_by(eez) %>%
+  summarize(chi = sum(value)) %>%
+  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
+  arrange(rgn_label, desc(chi)) %>%
+  mutate(rgn_label = fct_inorder(rgn_label))
+
+imp_plot_df <- imp_by_eez_unwt_df %>%
+  left_join(imp_by_eez_nspp_wt_df) %>%
+  select(-nspp_mean, -ncell) %>%
+  pivot_longer(-eez, names_to = 'str', values_to = 'imp') %>%
+  mutate(weighting = ifelse(str_detect(str, 'nspp'), 'species richness', 'unweighted'),
+         str = str_remove_all(str, '_mean.*|_nspp.+')) %>%
+  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
+  mutate(rgn_label = fct_reorder(rgn_label, eez)) %>%
+  filter(!is.na(eez) & !is.na(rgn_label))
+```
+
+
+### Plot by EEZ
+
+```{r}
+pal_raw <- hcl.colors(n = 5, palette = 'viridis')[c(1, 3, 5, 2, 4)]
+pal_mtx <- rbind(colorspace::darken(pal_raw, .3),
+                 colorspace::lighten(pal_raw, .2),
+                 colorspace::lighten(pal_raw, .6))
+pal <- c(pal_mtx)[-9]
+
+cc_strs <- c('sst_extremes', 'ocean_acidification', 'sea_level_rise', 
+             'uv_radiation', 'sst_rise')
+all_strs <- imp_plot_df$str %>% unique()
+str_clrs <- rep(NA, length(all_strs)) %>%
+  setNames(all_strs)
+str_clrs[cc_strs] <- 'red'
+
+p <- ggplot(data = imp_plot_df, aes(x = imp, y = weighting)) +
+  theme_ohara() +
+  ### Fill plus outlines for key
+  geom_col(aes(fill = str, color = str), 
+           width = .8, size = 0.25) +
+  ### overlay outlines without fill
+  geom_col(aes(color = str), fill = NA,
+           width = .8, size = 0.25,
+           show.legend = FALSE) +
+  facet_grid(rows = vars(rgn_label), switch = 'y') +
+  scale_fill_manual(values = pal, na.value = NA) +
+  scale_color_manual(values = str_clrs, na.value = NA) +
+  ### draw a vertical line for left-hand axis (impact = 0)
+  geom_vline(xintercept = 0, color = 'black') +
+  ### clean up theme
+  theme(panel.background = element_blank(),
+        text = element_text(family = 'Helvetica'),
+        legend.text = element_text(size = 6),
+        legend.title = element_text(face = 'bold', size = 6),
+        legend.key.size = unit(.22, 'cm'),
+        strip.text.y.left = element_text(angle = 0, hjust = 1, face = 'bold'),
+        strip.background = element_blank(),
+        panel.grid.major.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y  = element_blank(),
+        axis.text.x = element_text(size = 6),
+        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
+  labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
+  
+ggsave('eez_impact_summary.png', height = 3, width = 6, units = 'in')
+
+knitr::include_graphics('eez_impact_summary.png')
+```

@@ -1,0 +1,249 @@
+---
+title: "Map AquaMaps species to BC CRS from HCAF"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',
+                      echo = TRUE, message = FALSE, warning = FALSE)
+
+library(oharac) ### remotes::install_github('oharac/oharac')
+library(terra)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Convert HCAF maps from AquaMaps into the BC 1 km x 1 km projection.
+
+# Methods
+
+For each species, bind the AquaMaps HCAF cell presence values with a lookup dataframe of LOICZID to BC cell ID.  Save out a vector of just the new BC ID cell values, per species (rather than per AquaMaps species ID).
+
+## Set up directories and helper functions
+
+```{r}
+am_dir <- '/home/shares/ohi/spp_vuln/aquamaps_2021'
+
+get_am_spp_envelopes <- function() {
+  env_file <- file.path(am_dir, 'species_envelope_summary.csv')
+  
+  ### create a tidy summary of environmental envelopes
+  if(!file.exists(env_file)) { ### create from scratch
+    env_info <- data.table::fread(file.path(am_dir, 'ver10_2019_hspen.csv')) %>%
+      janitor::clean_names() %>%
+      rename(am_sid = species_id)
+
+    params <- c('depth', 'temp', 'salinity', 'prim_prod', 'ice_con', 'oxy', 'land_dist')
+    prm_or <- paste0(params, collapse = '|')
+    dist_vals <- c('min', 'pref_min', 'mean', 'pref_max', 'max')
+    env_sum_df <- env_info %>%
+      rename(depth_mean = mean_depth) %>%
+      select(am_sid, contains(params)) %>%
+      gather(param_full, value, -am_sid) %>%
+      mutate(param = str_extract(param_full, prm_or),
+             dist = str_replace(param_full, paste0('(', prm_or, ')_'), '')) %>%
+      select(-param_full) %>%
+      spread(dist, value) %>%
+      filter(yn == 1) %>%
+      select(-yn) %>%
+      gather(dist, value, -am_sid, -param) %>%
+      mutate(dist = factor(dist, levels = dist_vals),
+             value = ifelse(param == 'depth', log10(value + 1), value),
+             param = ifelse(param == 'depth', 'log10_depth', param))
+
+    write_csv(env_sum_df, env_file)
+  }
+  env_df <- data.table::fread(env_file) %>%
+    mutate(am_sid = tolower(am_sid))
+  return(env_df)
+}
+
+get_am_spp_cells <- function(occurcells_cut = 0, prob_cut = 0) {
+  
+  spp_cell_file <- file.path(am_dir, 'hcaf_species_native_clean.csv')
+  ### file created in _setup/species/aquamaps/2_map_aquamaps_to_moll.Rmd
+  
+  spp_cells <- data.table::fread(spp_cell_file)
+  
+  if(occurcells_cut > 0) {
+    spp_valid <- get_am_spp_info() %>%
+      filter(occur_cells >= occurcells_cut) %>%
+      dplyr::select(am_sid, sciname)
+    spp_cells <- spp_cells %>%
+      filter(am_sid %in% spp_valid$am_sid)
+  }
+  if(prob_cut > 0) {
+    spp_cells <- spp_cells %>%
+      filter(prob >=  prob_cut)
+  }
+  return(spp_cells)
+}
+
+```
+
+
+## Read and examine species cell occurrences
+
+```{r clean am spp cells}
+spp_cell_file <- file.path(am_dir, 'hcaf_species_native_clean.csv')
+
+### create a cleaner version  of spp native file for speed and size!
+if(!file.exists(spp_cell_file)) {
+  csq_loiczid <- get_hcaf_info() %>%
+    select(loiczid, csquare_code) %>%
+    distinct()
+  spp_cells <- data.table::fread(file.path(am_dir, 'hcaf_species_native.csv')) %>%
+    janitor::clean_names() %>%
+    oharac::dt_join(csq_loiczid, by = 'csquare_code', type = 'left') %>%
+    select(am_sid = species_id, loiczid, prob = probability) %>%
+    distinct() %>%
+    mutate(am_sid = tolower(am_sid))
+
+  write_csv(spp_cells, spp_cell_file)
+}
+
+```
+
+## Create a LOICZID to BC cell ID lookup
+
+```{r create cell id lookup}
+loiczid_bc_r <- rast(here('_spatial/loiczid_bc_1km.tif')) %>%
+  setNames('loiczid')
+ocean_bc_r <- rast(here('_spatial/ocean_bc_1km.tif')) %>%
+  setNames('ocean_a')
+bathy_bc_neritic <- rast(here('_spatial/bathy_bc_neritic.tif')) %>%
+  setNames('neritic')
+bathy_bc_shallow <- rast(here('_spatial/bathy_bc_shallow.tif')) %>%
+  setNames('shallow')
+cell_id_r <- loiczid_bc_r %>% setValues(1:ncell(.)) %>%
+  setNames('cell_id')
+
+### combine SpatRaster layers and convert to dataframe; drop non-ocean cells
+cell_id_df <- c(loiczid_bc_r, ocean_bc_r, 
+                bathy_bc_neritic, bathy_bc_shallow, 
+                cell_id_r) %>%
+  as.data.frame() %>%
+  filter(!is.na(ocean_a))
+```
+
+```{r load am data}
+
+am_spp_cells <- get_am_spp_cells() %>%
+  filter(loiczid %in% cell_id_df$loiczid)
+
+map_stem <- here_anx('spp_maps_bc/am_spp_bc_%s.csv')
+am_sids <- read_csv(here('_data/am_spp_bc.csv')) %>%
+  select(am_sid, sciname)
+am_spp_info <- get_spp_info() %>%
+  filter(src == 'am') %>%
+  select(sciname = species, wcol, id, map_f) %>%
+  full_join(am_sids, by = 'sciname') %>%
+  distinct() %>%
+  mutate(id = ifelse(is.na(id), str_replace_all(sciname, ' ', '_'), id)) %>%
+  mutate(map_f = ifelse(is.na(map_f), sprintf(map_stem, id), map_f))
+
+am_spp_mask_info <- am_spp_info %>%
+  left_join(get_am_spp_envelopes(), by = 'am_sid') %>%
+  filter(param == 'log10_depth') %>%
+  # mutate(value = 10^value) %>%
+  spread(dist, value) %>%
+  mutate(am_sid = tolower(am_sid),
+         mask   = case_when(wcol %in% c('bp', 'pel') ~ 'none', 
+                              ### don't mask pelagics/benthopelagics
+                            is.na(wcol)              ~ 'none', 
+                              ### don't mask unknowns
+                            max <=  60 ~ 'shallow',
+                            max <= 200 ~ 'neritic',
+                            TRUE       ~ 'none')) %>%
+  mutate(mask = factor(mask, levels = c('shallow', 'neritic', 'none'), ordered = TRUE)) %>%
+  select(am_sid, sciname, mask, map_f) %>%
+  distinct()
+  
+
+### For species with synonyms, check that mask values of duped am_sid match up -
+# x <- janitor::get_dupes(am_spp_mask_info, sciname)
+### all are 'shallow'
+
+```
+
+``` {r process maps}
+map_vec <- am_spp_mask_info$map_f %>% unique()
+
+# spp_done <- map_vec[file.exists(map_vec)]
+map_vec <- map_vec[!file.exists(map_vec)]
+
+map_am_hcaf_to_bc <- function(out_f) {
+  # out_f <- map_vec[1]
+  i <- which(map_vec == out_f)
+  df <- am_spp_mask_info %>%
+    filter(map_f == out_f)
+  s <- df$sciname %>% unique()
+  
+  ### identify the species ID(s) for this species
+  s_sids <- df$am_sid %>% unique()
+  
+  if(file.exists(out_f)) {
+    message('File exists for ', s, ', ... (', i, ' of ', length(map_vec), ')... skipping!')
+  } else {
+    message('Processing map for ', s, '... (', i, ' of ', length(map_vec), 
+            '), am_sid = ', paste(s_sids, collapse = '/'), '...')
+    
+    
+    ### identify the depth(s); if multiple, choose the least restrictive
+    s_depth <- df %>% 
+      filter(mask == max(mask)) %>%
+      .$mask %>% unique()
+    
+    ### identify the cells for am_sid(s) and join to bc cells
+    s_cells <- am_spp_cells %>%
+      filter(am_sid %in% s_sids)
+    
+    if(n_distinct(s_cells$am_sid) > 1) {
+      ### choose highest prob in cell for multi-am_sid spp
+      s_cells <- s_cells %>%
+        group_by(loiczid) %>%
+        filter(prob == max(prob)) %>%
+        ungroup()
+    }
+    s_bc <- s_cells %>%
+      oharac::dt_join(cell_id_df, by = 'loiczid', type = 'left')
+    
+    ### filter to proper depth category
+    if(s_depth == 'shallow') {
+      message('... clipping ', s, ' to shallow waters only')
+      s_bc <- s_bc %>%
+        filter(!is.na(shallow))
+    } else if(s_depth == 'neritic') {
+      message('... clipping ', s, ' to neritic waters only')
+      s_bc <- s_bc %>%
+        filter(!is.na(neritic))
+    } ### else, 'none', so no bathymetric filter
+    
+    s_bc <- s_bc %>%
+      select(prob, cell_id)
+
+    write_csv(s_bc, out_f)
+  }
+}
+
+tmp <- parallel::mclapply(map_vec, map_am_hcaf_to_bc, mc.cores = 12)
+```
+

@@ -1,0 +1,318 @@
+---
+title: "Set up base rasters"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(terra)
+library(sf)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Set up rasters for analysis.
+
+* Master rasters at 1 x 1 km resolution in BC Albers (epsg:3005) CRS
+* Ocean presence raster $\in$ (0, 1], 1 km x 1 km BC CRS
+    * create bc raster from NE ocean
+* Coastal presence raster $\in$ (0, 1], 1 km x 1 km BC CRS
+    * create bc raster from buffered land, at 3 nmi distance
+* Using the 1 km x 1 km ocean presence raster as a base, create:
+    * EEZ raster
+    * MEOW raster
+    * Bathymetry raster (to clip species to max depth levels)
+
+# Data
+
+Land and ocean shapefiles from Natural Earth.  Free vector and raster map data @ naturalearthdata.com.
+
+
+# Methods
+
+## Master raster 1 km resolution
+
+This will be a raster of the BC EEZ, presence = 1 for region, NA for outside the region.
+
+```{r}
+
+ocean_1km_file <- here('_spatial/ocean_bc_1km.tif')
+
+if(!file.exists(ocean_1km_file)) {
+
+  bc_eez_sf <- read_sf(here('_spatial/bc_eez/bc_eez.gpkg'))
+  bc_ext <- ext(bc_eez_sf)
+  bc_bbox_r <- rast(bc_ext) %>%
+    setValues(1)
+  crs(bc_bbox_r) <- crs(bc_eez_sf)
+
+  bc_roi_1km <- project(bc_bbox_r, y = crs(bc_eez_sf), res = 1000)
+  rast_bc <- bc_roi_1km %>%
+    mask(bc_eez_sf) %>%
+    trim() ### cut out excessive NA space in region of interest
+
+  writeRaster(rast_bc, ocean_1km_file, overwrite = TRUE)
+}
+```
+
+
+
+## Ocean presence raster
+
+* Reproject NE ocean shapefile to BC CRS
+* Use `terra::rasterize` to rasterize the reprojected ocean shapefile to BC CRS with a 1 km resolution.
+    * Values will be 1 (ocean) and NA (not ocean)
+
+```{r ocean 1 km}
+### load ocean base and land for next steps
+ocean_base <- rast(ocean_1km_file)
+
+land_bc_sf <- read_sf(here('_spatial', 'bc_eez', 'bc_land.gpkg'))
+
+```
+
+## Coastal zone rasters
+
+* Reproject NE land shapefile to BC CRS.  Buffer to 3 nmi.
+* Use `rasterize` to rasterize the reprojected buffered land shapefile to BC CRS with a 1 km resolution.
+    * Values will be 1 (land) and NA (not land).
+* Mask with the ocean 1 km raster to include only ocean-based cells that fall within the 3 nmi buffer.
+
+```{r coastal 3nmi 1 km}
+coastal_3nmi_buffer_1km_file <- here('_spatial/coastal_3nmi_buffer_bc_1km.tif')
+
+if(!file.exists(coastal_3nmi_buffer_1km_file)) {
+  message('Processing 3 nmi coastal buffer at 1 km resolution...')
+  
+  land_3nmi_bc_sf <- land_bc_sf %>%
+    st_buffer(dist = 5556) %>% ### 3 nautical miles = 5.556 km
+    st_cast('MULTIPOLYGON') %>%
+    mutate(val = 1)
+
+  land_3nmi_bc_1km <- rasterize(land_3nmi_bc_sf, 
+                              ocean_base, 
+                              field = 'val',
+                              background = NA)
+  
+  coastal_3nmi_buffer_1km <- mask(land_3nmi_bc_1km, ocean_base)
+
+  writeRaster(coastal_3nmi_buffer_1km, 
+              filename = coastal_3nmi_buffer_1km_file)
+}
+
+```
+
+```{r coastal 1 km buffer}
+coastal_1km_buffer_1km_file <- here('_spatial/coastal_1km_buffer_bc_1km.tif')
+
+if(!file.exists(coastal_1km_buffer_1km_file)) {
+  message('Processing 1 km coastal buffer at 1 km resolution...')
+
+  land_1km_bc_sf <- land_bc_sf %>%
+    st_buffer(dist = 1000) %>% ###
+    st_cast('MULTIPOLYGON') %>%
+    mutate(val = 1)
+
+  land_1km_bc_1km <- rasterize(land_1km_bc_sf, 
+                              ocean_base, 
+                              field = 'val', 
+                              background = NA)
+  
+  coastal_1km_buffer_1km <- mask(land_1km_bc_1km, ocean_base)
+
+  writeRaster(coastal_1km_buffer_1km, 
+              filename = coastal_1km_buffer_1km_file)
+}
+
+coastal_3nmi_bc <- rast(coastal_3nmi_buffer_1km_file)
+coastal_1km_bc <- rast(coastal_1km_buffer_1km_file)
+plot(ocean_base, col = 'blue')
+plot(coastal_3nmi_bc, col = 'yellow', add = TRUE)
+plot(coastal_1km_bc, col = 'red', add = TRUE)
+
+```
+
+## LOICZID raster
+
+for projecting AquaMaps to BC CRS.  Because LOICZID starts at 1 at (-180, 90), we can fill in values down to 60N, then project, and it should still work fine.
+
+``` {r set up LOICZID raster}
+
+loiczid_rast_file <- here('_spatial', 'loiczid_bc_1km.tif')
+
+if(!file.exists(loiczid_rast_file)) {
+  
+  loiczid_rast <- rast(x = ext(c(-180, 180, -90, 90)), 
+                       res = 0.5,
+                       crs = '+init=epsg:4326') %>%
+    setValues(1:ncell(.))
+  
+  loiczid_bc <- project(loiczid_rast, ocean_base, method = 'near') %>%
+    mask(ocean_base)
+  
+  writeRaster(loiczid_bc, loiczid_rast_file, overwrite = TRUE)
+}
+
+loiczid_bc <- rast(loiczid_rast_file)
+plot(loiczid_bc, 
+     col = hcl.colors(20),
+     main = 'LOICZID raster 1 km^2 BC projection')
+
+```
+
+## MEOW raster
+
+Using the MEOW shapefile, we will include all the shapes at the region and province level and then mask out land using the area raster (for consistency).
+
+``` {r set up MEOW rgns raster}
+
+meow_rgn_rast_file <- here('_spatial', 'meow_rgns_bc_1km.tif')
+
+if(!file.exists(meow_rgn_rast_file)) {
+  meow_sf <- read_sf(here('_spatial/meow_rgns/meow_rgns.shp'))
+
+  meow_sf_bc <- meow_sf %>%
+    smoothr::densify(max_distance = 0.1) %>%
+    select(ECO_CODE_X, geometry) %>%
+    st_transform(crs(ocean_base))
+  
+  # plot(meow_sf_bc)
+  
+  meow_rast <- rasterize(meow_sf_bc, 
+                         ocean_base, 
+                         field = 'ECO_CODE_X', 
+                         fun = 'min')
+  
+  meow_rast <- meow_rast %>%
+    mask(ocean_base)
+    
+  writeRaster(meow_rast, meow_rgn_rast_file, overwrite = TRUE)
+}
+ 
+meow_rgn_rast <- rast(meow_rgn_rast_file)
+
+plot(meow_rgn_rast,  col = hcl.colors(20),
+     main = 'MEOW ecoregions raster 1 km^2 BC')
+
+```
+
+``` {r set up MEOW provinces raster}
+
+meow_prov_rast_file <- here('_spatial', 'meow_prov_bc_1km.tif')
+
+if(!file.exists(meow_prov_rast_file)) {
+  meow_sf <- read_sf(here('_spatial/meow_rgns/meow_rgns.shp'))
+
+  meow_sf_bc <- meow_sf %>%
+    smoothr::densify(max_distance = 0.1) %>%
+    select(PROV_CODE, geometry) %>%
+    st_transform(crs(ocean_base))
+  
+  meow_rast <- rasterize(meow_sf_bc, 
+                         ocean_base, 
+                         field = 'PROV_CODE', fun = 'min')
+  
+  meow_rast <- meow_rast %>%
+    mask(ocean_base)
+    
+  writeRaster(meow_rast, meow_prov_rast_file, overwrite = TRUE)
+}
+ 
+meow_prov_rast <- rast(meow_prov_rast_file)
+
+plot(meow_prov_rast, col = hcl.colors(20),
+     main = 'MEOW provinces raster 1 km^2 BC')
+
+```
+
+
+## Bathymetry raster
+
+Using [General Bathymetric Chart of the Oceans (GEBCO) bathymetry raster](https://www.bodc.ac.uk/data/hosted_data_systems/gebco_gridded_bathymetry_data/), identify min depth of ocean cells.  For neritic and coastal cells, leaving as min depth allows for changing depth thresholds if desired.  We will not clip based on anything below 200 m, so can classify these more coarsely.
+
+NOTE: 1 arcmin and 30 arcsec are available; 30 arcsec is more recent but one arcmin should be sufficient for our purposes.  Resample to 6 arc-minute (0.10°) using min depth in each cell.
+
+Additionally, to ensure some minimum coastal cell presence, we will include a buffer based on the 3nm coastal zone from OHI.
+
+Bathymetry is masked to the ocean area raster.  
+
+### Create and view minimum depth raster
+
+``` {r set up bathymetry raster}
+
+bathy_rast_file <- here('_spatial', 'bathy_bc.tif')
+
+if(!file.exists(bathy_rast_file)) {
+  
+  gebco_rast_file <- here_anx('_spatial/gebco/GRIDONE_1D.nc')
+  gebco_rast_raw  <- rast(gebco_rast_file)
+
+  ### The GEBCO raster is elevation, so depth is neg... for min depth, 
+  ### aggregate by max (and vice versa) (no need to aggregate for 1 km resolution)
+  bathy_rast_min <- gebco_rast_raw
+  
+  bathy_rast_min <- -1 * bathy_rast_min ### depth as positive
+    
+  bathy_rast_raw <- bathy_rast_min %>%
+    project(ocean_base, method = 'near')
+  
+  ### reclassify:
+  ### compress cells above zero to sea level;
+  ### compress cells below 200 m to rough depth clips
+  bathy_rast <- bathy_rast_raw
+  bathy_rast[bathy_rast_raw <    0] <-    0
+  bathy_rast[bathy_rast_raw >  200] <- 1000
+  bathy_rast[bathy_rast_raw > 1000] <- 2000
+  bathy_rast[bathy_rast_raw > 2000] <- 3000
+  bathy_rast[bathy_rast_raw > 3000] <- 4000
+  bathy_rast[bathy_rast_raw > 4000] <- 5000
+  bathy_rast[bathy_rast_raw > 5000] <- 6000
+  bathy_rast[bathy_rast_raw > 6000] <- 7000
+  bathy_rast[bathy_rast_raw > 7000] <- 8000
+  
+  bathy_rast <- bathy_rast %>%
+    mask(ocean_base)
+    
+  writeRaster(bathy_rast, bathy_rast_file, overwrite = TRUE)
+
+  ### set up all masks with a base filled with NAs
+  coastal_rast <- rast(coastal_3nmi_buffer_1km_file)
+  rast_neritic <- rast_shallow <- rast(bathy_rast)
+  rast_neritic[bathy_rast <= 200] <- 1
+  rast_neritic[!is.na(coastal_rast)] <- 1
+  rast_shallow[bathy_rast <=  60] <- 1
+  rast_shallow[!is.na(coastal_rast)] <- 1
+  
+  writeRaster(rast_neritic, here('_spatial', 'bathy_bc_neritic.tif'),
+              overwrite = TRUE)
+  writeRaster(rast_shallow, here('_spatial', 'bathy_bc_shallow.tif'),
+              overwrite = TRUE)
+  
+}
+
+bathy_rast <- rast(bathy_rast_file)
+
+plot(bathy_rast,  col = hcl.colors(20),
+     main = 'Bathymetry (minimum depth) raster 1 km^2 BC')
+
+```
+

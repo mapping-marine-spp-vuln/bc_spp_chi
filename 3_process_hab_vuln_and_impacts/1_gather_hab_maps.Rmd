@@ -1,0 +1,89 @@
+---
+title: "Gather habitat maps and process to BC"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 6)
+
+# library(raster)
+library(terra)
+library(oharac)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+```
+
+# Summary
+
+Gather habitat maps from Recent Pace of Change project (Halpern et al. 2019), aggregate and reproject to bc 1 km resolution
+
+# Data
+
+Data prepped for Halpern et al. 2019, available from Mazu server.
+
+# Methods
+
+For each CHI native layer (~934m Mollweide):
+
+* Read in habitat raster of 1 (presence) and NA (absence).
+* Convert NAs to 0 then mask by ocean presence to eliminate land cells.
+* Aggregate by a factor of 11 to approximate 10 km x 10 km, using a mean function - this results in approximate habitat proportional representation in the cell.
+* Reproject the result to the analysis CRS/resolution and write out.
+
+```{r}
+in_hab_dir <- '/home/shares/ohi/git-annex/impact_acceleration/habitats'
+
+deprecated <- c('coral_reef', 'seagrass', 'kelp', 'salt_marsh', 'ice') %>% 
+  smash2or()
+### deprecated layers; newer layers available
+
+hab_fs <- data.frame(raw = list.files(in_hab_dir, pattern = '.tif$', 
+                                      full.names = TRUE)) %>%
+  mutate(reproj = ifelse(str_detect(basename(raw), deprecated),
+                         here('_data/habitat_maps/deprecated', 
+                              str_replace(basename(raw), '.tif', '_chi2019.tif')),
+                         here('_data/habitat_maps', basename(raw)))) %>%
+  mutate(filecheck = file.exists(reproj))
+
+if(any(!file.exists(hab_fs$reproj))) {
+  ocean_rast_chi <- rast(here_anx('../spp_vuln_mapping/_spatial/ocean_chi.tif'))
+
+  ### load ocean and coastal rasters at analysis resolution
+  ocean_bc <- rast(here('_spatial/ocean_bc_1km.tif'))
+  coastal_bc <- rast(here('_spatial/coastal_3nmi_buffer_bc_1km.tif'))
+}
+
+for(i in 1:nrow(hab_fs)) {
+  ### i <- 2
+  in_f  <- hab_fs$raw[i]
+  out_f <- hab_fs$reproj[i]
+  if(file.exists(out_f)) {
+    message('Reprojected habitat map ', basename(out_f), ' exists... skipping!')
+    next()
+  }
+  message('Reading in ', in_f, '...')
+  r <- rast(in_f)
+
+  message('... Projecting ', basename(in_f), ' to 1 km resolution bc...')
+  out_r <- project(r, ocean_bc, method = 'near') %>%
+    mask(ocean_bc)
+
+  writeRaster(out_r, out_f, overwrite = TRUE)
+}
+```
+

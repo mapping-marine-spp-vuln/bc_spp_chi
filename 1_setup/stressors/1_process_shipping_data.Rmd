@@ -1,0 +1,300 @@
+---
+title: "Process shipping stressors"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(terra)
+library(sf)
+library(oharac) ### remotes::install_github('oharac/oharac')
+  ### includes some helper functions, e.g., dt_join
+library(tidyverse)
+library(here)
+
+source(here('common_fxns.R'))
+source('stressor_fxns.R') ### in same dir as this Rmd
+
+```
+
+# Summary
+
+Process shipping stressors, including a layer for ship strikes and for noise pollution, to 10 km Mollweide CRS.  Also process benthic structures, including oil, gas, and wind farms. 
+
+* Commercial/passenger ship combined layer for large ships that contribute to whale strikes and (potentially) chemical pollution
+* Fishing/leisure craft combined layer for smaller ships (stressors?)
+* Combined layer of all ship tracks (stressors?)
+
+Note: Ship density is NOT log-transformed, in a departure from prior CHI methods - e.g., Halpern et al. 2019.  Since passage of a ship does not likely leave persistent impacts (e.g., once a ship has passed, it can't still inflict wildlife strikes), leaving it in its raw density seems appropriate.  
+
+We may wish to revisit this with respect to ship-based chemical pollutants etc.
+
+# Data
+
+* Data from: https://datacatalog.worldbank.org/search/dataset/0037580
+    * Cite as: Cerdeiro, D. A., Komaromi, A., Liu, Y., & Saeed, M. (2020). World Seaborne Trade in Real Time: A Proof of Concept for Building AIS-based Nowcasts from Scratch (IMF Working Paper WP/20/57). International Monetary Fund.
+* This is a count of ships per cell - aggregate, convert to ships per ocean area, then reproject.
+
+
+# Methods
+
+## Examine shipping density data
+
+Files downloaded from https://datacatalog.worldbank.org/search/dataset/0037580 and unzipped to /home/shares/ohi/spp_vuln/spp_vuln_mapping/ship_density.  The data are in GeoTIFF raster format; each raster is about 10 GB.  Also included are .tif.ovr files, which are pyramids; these are 3 GB but can probably be safely discarded.
+
+We will change the process from that used in the global analysis.  We will not mask to ocean then aggregate to 0.1 degree; instead we will crop to 65 deg N and above, then reproject, then rasterize.  We will also only process the large shipping data.
+
+```{r}
+ship_raw_dir <- here_anx('../spp_vuln_mapping/stressors/ship_density/raw')
+raw_tifs <- list.files(ship_raw_dir, pattern = '.tif$', full.names = TRUE)
+comm_shipping_r <- rast(raw_tifs[1])
+# class      : RasterLayer 
+# dimensions : 33998, 72006, 2448059988  (nrow, ncol, ncell)
+# resolution : 0.005, 0.005  (x, y)
+# extent     : -180.0153, 180.0147, -84.98735, 85.00265  (xmin, xmax, ymin, ymax)
+# crs        : +proj=longlat +datum=WGS84 +no_defs 
+# source     : ShipDensity_Commercial1.tif 
+# names      : ShipDensity_Commercial1 
+# values     : 0, 62652999  (min, max)
+
+### Check value to compare reprojected commercial layer - 
+### sum of global ship tracks
+# sum(values(comm_shipping_r), na.rm = TRUE)
+# [1] 6.520743e+14
+```
+
+## Crop shipping rasters to BC only
+
+Loop over each raw layer, save out cropped layer.
+```{r}
+ship_cropped_dir <- here_anx('/stressors/ship_density/cropped')
+
+new_fs <- basename(raw_tifs) %>%
+  tolower() %>%
+  str_remove_all('[0-9]') %>%
+  str_replace('.tif', '_cropped.tif')
+tifs_cropped <- file.path(ship_cropped_dir, new_fs)
+
+
+for(i in seq_along(raw_tifs)) {
+  ### i <- 1
+  tif_raw <- raw_tifs[i]
+  tif_cropped <- tifs_cropped[i]
+  if(!file.exists(tif_cropped)) {
+    message('Cropping ', basename(tif_raw), ' to BC...')
+    r <- rast(tif_raw)
+    bc_bbox <- create_bc_sf()
+    r_cropped <- crop(r, bc_bbox)
+    message('Writing ', basename(tif_cropped))
+    writeRaster(x = r_cropped, filename = tif_cropped, 
+                overwrite = TRUE)
+  } else {
+    message('File ', basename(tif_cropped), ' exists... skipping!')
+  }
+}
+```
+
+Convert shipping to tracks per km^2^.  Loop over each masked layer, save out intensity layer.
+
+```{r rescale to shipping intensity}
+ship_intens_dir <- here_anx('stressors/ship_density/intensity')
+
+new_fs <- basename(tifs_cropped) %>%
+    str_replace('.tif', '_intens.tif')
+tifs_intens <- file.path(ship_intens_dir, new_fs)
+
+for(i in seq_along(tifs_cropped)) {
+  ### i <- 1
+  tif_cropped <- tifs_cropped[i]
+  tif_intens <- tifs_intens[i]
+  
+  if(!file.exists(tif_intens)) {
+    message('Converting to ships per km^2: ', basename(tif_cropped))
+    r <- rast(tif_cropped)
+    
+    ### convert to ships per km^2
+    if(!exists('area_r')) {
+      ### area in km^2
+      area_r <- cellSize(r) / 1e6
+    }
+    r_intensity <- r / area_r
+    
+    message('Writing ', basename(tif_intens))
+    writeRaster(r_intensity, tif_intens, 
+                overwrite = TRUE)
+  } else {
+    message('File ', basename(tif_intens), ' exists... skipping!')
+  }
+}
+# for(t in tifs_intens) {
+#   ### t <- tifs_intens[1]
+#   r_name <- basename(t) %>% str_remove_all('shipdensity_|_cropped_intens.tif')
+#   r <- raster(t)
+#   plot(r, axes = F, main = sprintf('%s tracks per km^2', r_name))
+# }
+```
+
+## Reproject to 1km x 1km bc
+
+Aggregated files are here, with values of ships per km^2^:
+
+* dir: `/home/shares/ohi/spp_vuln/spp_vuln_mapping/stressors/ship_density/intensity`
+    * files: 
+        * `shipdensity_commercial_cropped_intens.tif`
+        * `shipdensity_fishing_cropped_intens.tif`
+        * `shipdensity_leisure_cropped_intens.tif`
+        * `shipdensity_oilgas_cropped_intens.tif`
+        * `shipdensity_passenger_cropped_intens.tif`
+        
+Create several layers: 
+
+* a commercial and passenger ship layer, for ship strikes
+    * ship strikes are primarily caused by huge ships, while smaller craft can avoid mammals more readily.
+    * what about FPSOs in oil and gas layer? Include oil and gas layer as well.  It includes stationary rigs, but those should be a small contribution.
+* a fishing and leisure craft layer, in case we want to separately analyze impacts of small(er) craft (even the largest fishing boats and yachts are barely half the size of an average cruise or container ship)
+* an unweighted total tracks layer, just in case.
+    
+```{r}
+### Load ocean presence in bc 1 km cells (analysis CRS and res)
+ocean_rast <- rast(here('_spatial/ocean_bc_1km.tif'))
+```
+
+```{r}
+dir_shipping <- here_anx('stressors/ship_density/intensity')
+ship_raw_fs <- list.files(dir_shipping, pattern = '.tif$', full.names = TRUE)
+
+ship_raw_fs_large <- ship_raw_fs[str_detect(basename(ship_raw_fs), 'commercial|oilgas|passenger')]
+ship_raw_fs_small <- ship_raw_fs[!ship_raw_fs %in% ship_raw_fs_large]
+```
+
+Define a function to project a stack of shipping density rasters (provided at 0.1 degree resolution) to bc; convert to shipping track count; rescale.
+
+```{r}
+process_shipping_stack <- function(s) {
+  
+  ### Already masked and aggregated in prep script; sum and reproject
+  s_sum = sum(s)
+  r_sum <- project(s_sum, ocean_rast, method = 'bilinear')
+  
+  ### mask to ocean
+  r_masked <- mask(r_sum, ocean_rast)
+  
+  ### check sum of commercial stack to make sure process is clean
+  # sum(values(r_masked), na.rm = TRUE)
+  # 3.261961e+13 # very close to original: 3.34562e+13
+
+  ### summarize ship track counts and rescale
+  r_rescaled <- rescale_stressor(r_masked, qtile = .999)
+  
+  return(r_rescaled)
+}
+```
+
+```{r create large ship layer}
+ship_large_f <- here('_data/stressors_bc/shipping_large_2021.tif')
+### unlink(ship_large_f)
+
+if(!file.exists(ship_large_f)) {
+
+  ship_l_stack <- rast(ship_raw_fs_large)
+  # class       : SpatRaster 
+  # dimensions  : 4001, 72000, 3  (nrow, ncol, nlyr)
+  # resolution  : 0.005, 0.005  (x, y)
+  # extent      : -180.0003, 179.9997, 64.99765, 85.00265  (xmin, xmax, ymin, ymax)
+  # coord. ref. : lon/lat WGS 84 (EPSG:4326) 
+  # sources     : shipdensity_commercial_cropped_intens.tif  
+  #               shipdensity_oilgas_cropped_intens.tif  
+  #               shipdensity_passenger_cropped_intens.tif  
+  # names       : ShipDensit~ommercial1, ShipDensity_OilGas1, ShipDensity_Passenger1 
+  # min values  :                     0,                   0,                    0.0 
+  # max values  :            1259031296,            27046096,               158515.5 
+  
+  ### summarize ship track counts and rescale
+  ship_large_r_n <- process_shipping_stack(s = ship_l_stack)
+
+  ### round to drop ludicrous precision then save out
+  values(ship_large_r_n) <- round(values(ship_large_r_n), 4)
+  writeRaster(ship_large_r_n, ship_large_f, overwrite = TRUE)
+}
+
+r <- rast(ship_large_f)
+  
+plot(r, axes = FALSE,
+     main = 'Commercial, passenger, and oil/gas shipping, rescaled')
+
+hist(r[r > 0], main = 'distribution of non-zero values')
+```
+
+```{r create small ship layer, eval = FALSE}
+ship_small_f <- here('_data/stressors_bc/shipping_small_2021.tif')
+### unlink(ship_small_f)
+
+if(!file.exists(ship_small_f)) {
+
+  ship_sm_stack <- rast(ship_raw_fs_small)
+  # class       : SpatRaster 
+  # dimensions  : 4001, 72000, 2  (nrow, ncol, nlyr)
+  # resolution  : 0.005, 0.005  (x, y)
+  # extent      : -180.0003, 179.9997, 64.99765, 85.00265  (xmin, xmax, ymin, ymax)
+  # coord. ref. : lon/lat WGS 84 (EPSG:4326) 
+  # sources     : shipdensity_fishing_cropped_intens.tif  
+  #               shipdensity_leisure_cropped_intens.tif  
+  # names       : ShipDensity_Fishing1, ShipDensity_Leisure1 
+  # min values  :                    0,                    0 
+  # max values  :             32376546,             59287008 
+  ### summarize ship track counts and rescale
+  ship_small_r_n <- process_shipping_stack(ship_sm_stack)
+
+  ### round to drop ludicrous precision then save out
+  values(ship_small_r_n) <- round(values(ship_small_r_n), 4)
+  writeRaster(ship_small_r_n, ship_small_f, overwrite = TRUE)
+}
+
+r <- raster(ship_small_f)
+  
+plot(r, axes = FALSE,
+     main = 'Fishing and leisure vessels, rescaled')
+
+hist(r[r > 0], main = 'distribution of non-zero values')
+```
+
+```{r create combined unweighted ship layer, eval = FALSE}
+ship_all_unweighted_f <- here('_data/stressors_mol', 
+                              'shipping_all_unweighted_2021.tif')
+### unlink(ship_all_unweighted_f)
+
+if(!file.exists(ship_all_unweighted_f)) {
+
+  ship_all_stack <- stack(ship_raw_fs)
+
+  ### summarize ship track counts and rescale
+  ship_all_r_n <- process_shipping_stack(ship_all_stack)
+
+  ### round to drop ludicrous precision then save out
+  values(ship_all_r_n) <- round(values(ship_all_r_n), 4)
+  writeRaster(ship_all_r_n, ship_all_unweighted_f, overwrite = TRUE)
+}
+
+r <- raster(ship_all_unweighted_f)
+
+plot(r, axes = FALSE,
+     main = 'All vessels, unweighted, rescaled')
+
+hist(r[r > 0], main = 'distribution of non-zero values')
+```
+

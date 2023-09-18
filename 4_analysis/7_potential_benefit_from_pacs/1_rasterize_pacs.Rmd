@@ -1,0 +1,64 @@
+---
+title: "Rasterize PACs"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 7)
+
+library(terra)
+library(sf)
+library(oharac)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Read in PAC dataset and rasterize to 1 km polar CRS.
+
+# Data
+
+Acquired from Steve MacLean, WWF, on July 20, 2023: `WWF ArcNet PACs 2021.zip`.
+
+* Web overview: https://www.arcticwwf.org/our-priorities/nature/arcnet/
+* Full report: https://apiwwfarcticse.cdn.triggerfish.cloud/uploads/2022/04/08110748/report-wwf_arctic-arcnet_introductory_guide-a4-hires-final-webversion.pdf
+
+# Methods
+
+## identify geodatabase and layers
+
+Read in shapefile, crop to Arctic, reproject to arctic CRS, then rasterize.  There is only one feature containing lots of polygons, above and below the Arctic Circle.  It appears to already be in a polar CRS, but not the same as our working CRS.
+
+```{r}
+ocean_polar <- rast(here('_spatial/ocean_polar_1km.tif'))
+### use path relative to Rmd, since shapefile folder is in same directory as Rmd
+pac_polar_sf <- read_sf('pacs_shp/WWF ArcNet PACs 2021.shp') %>%
+  st_transform(st_crs(ocean_polar))
+
+# names(pac_polar_sf)
+#  "PAC_ID"     "Shape_Area" "AREA_Calc"  "geometry"
+
+pac_rast   <- rasterize(pac_polar_sf, ocean_polar, field = 'PAC_ID')
+writeRaster(pac_rast, here('_data/mpa_maps/wwf_pacs.tif'), overwrite = TRUE)
+
+plot(pac_rast, axes = FALSE, legend = FALSE,
+     main = 'WWF Priority Areas of Conservation', col = 'blue')
+```
+

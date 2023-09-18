@@ -1,0 +1,194 @@
+---
+title: "Identify BC spp from global mapping project"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4, fig.path = 'figs/',
+                      echo = TRUE, message = FALSE, warning = FALSE)
+
+library(terra)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+For all possible spp in the IUCN and AquaMaps datasets, identify those who have some presence in BC regions.  To do so:
+
+* identify 10 km Mollweide cell IDs and LOICZIDs that fall within BC area.
+* For AquaMaps spp: filter spp-cell file to just those LOICZIDs, then filter the species list to just those species.
+* For IUCN spp: loop through all spp range files as .csvs, and identify those with valid BC cell IDs.
+
+Write these out to `_data/iucn_spp` and `_data/am_spp`.
+
+From these, pare down the various species datasets for easier handling.
+
+# Methods
+
+## AquaMaps
+
+Read in LOICZID raster from `_spatial` and identify LOICZID cells in that raster; then filter spp-cell lookup to just those cells within that set; then filter the species info csv to just those aquamaps species IDs.
+
+
+```{r}
+loiczid_rast <- rast(here('_spatial/loiczid_bc_1km.tif'))
+loiczid_vec  <- values(loiczid_rast) %>% as.vector() %>% unique() %>% .[!is.na(.)]
+
+am_bc_f <- here('_data/am_spp_bc.csv')
+
+if(!file.exists(am_bc_f)) {
+  am_dir <- '/home/shares/ohi/spp_vuln/aquamaps_2021'
+  spp_cell_file <- file.path(am_dir, 'hcaf_species_native_clean.csv')
+  ### file created in _setup/species/aquamaps/2_map_aquamaps_to_moll.Rmd in
+  ### global spp_vuln_mapping project
+  
+  ### Identify species (by ID) who fall into valid cells
+  am_spp_cells <- data.table::fread(spp_cell_file) %>%
+    filter(loiczid %in% loiczid_vec) %>%
+    filter(prob >= 0.50)
+  
+  am_spp_ids <- am_spp_cells$am_sid %>% unique()
+  
+  ### Resolve scientific binomial matches between AquaMaps names and
+  ### valid names from WoRMS - note, this pulls from spp_vuln_mapping project.
+  spp_vuln_dir <- here('../spp_vuln_mapping')
+  spp_resolve_f <- file.path(spp_vuln_dir, '_data/worms_taxa/aquamaps_aphia_records.csv')
+  am_spp_resolve <- data.table::fread(spp_resolve_f) %>%
+    filter(!is.na(aphia_id)) %>%
+    group_by(am_sciname) %>%
+    mutate(match = am_sciname == valid_name) %>%
+    arrange(desc(match)) %>% ### get TRUE on top, if any
+    summarize(valid_name = first(valid_name), aphia_id = first(aphia_id))
+  
+  am_spp_info_cleaned <- data.table::fread(file.path(am_dir, 'ver10_2019_speciesoccursum_iucn.csv')) %>%
+    janitor::clean_names() %>%
+    rename(am_sid = species_id, iucn_sid = iucn_id, comname = f_bname) %>%
+    mutate(am_sciname = tolower(paste(genus, species))) %>%
+    full_join(am_spp_resolve, by = 'am_sciname') %>%
+    ### if WoRMS valid name available, use that, otherwise use am sciname
+    mutate(sciname = ifelse(is.na(valid_name), am_sciname, valid_name)) %>%
+    ### Remove var., allow incertae sedis and parentheticals to pass through, 
+    ### crop all remaining to two words
+    mutate(sciname = case_when(str_detect(sciname, 'incertae sedis') ~ sciname,
+                               str_detect(sciname, ' var\\.') ~ str_remove(sciname, ' var\\. .+'),
+                               str_detect(sciname, '\\(|\\)') ~ str_extract(sciname, '[^ ]+ \\(.+?\\) [^ ]+'),
+                               TRUE ~ str_extract(sciname, '[^ ]+ [^ ]+'))) %>%
+    ### coerce to lower case, then remove parentheticals, brackets, and punctuation
+    mutate(across(where(is.character), ~tolower(.x))) %>%
+    mutate(sciname = str_remove_all(sciname, '\\(.+?\\)'), ### parentheticals
+           sciname = str_remove_all(sciname, '\\[.+?\\]'), ### brackets
+           sciname = str_remove_all(sciname, '[^a-z ]')) %>% ### punctuation
+    mutate(sciname = str_squish(sciname))
+  
+  
+  am_spp_info <- am_spp_info_cleaned %>%
+    filter(am_sid %in% am_spp_ids) %>%
+    filter(occur_cells >= 10) %>%
+    select(am_sid, comname, kingdom, phylum, class, order, family,
+           iucn_sid, am_sciname, sciname) %>%
+    distinct()
+  
+  write_csv(am_spp_info, am_bc_f)
+}
+```
+
+### IUCN spp
+
+Here let's cheat a little by grabbing the HCAF summary of IUCN spp to LOICZID from the global project.  Identify the cells that corresponds to the LOICZID vector from above.
+
+```{r}
+iucn_bc_f <- here('_data/iucn_spp_bc.csv')
+
+if(!file.exists(iucn_bc_f)) {
+  iucn_hcaf_global <- read_csv(here_anx('../spp_vuln_mapping/iucn_spp/iucn_spp_hcaf.csv'))
+  
+  iucn_hcaf_bc <- iucn_hcaf_global %>%
+    filter(loiczid %in% loiczid_vec)
+  
+  iucn_spp_bc <- iucn_hcaf_bc$iucn_sid %>% unique()
+
+  file.copy(from = here('../spp_vuln_mapping/_data/iucn_spp/iucn_to_worms_match.csv'),
+            to = here('_data/iucn_spp'), overwrite = TRUE)
+  
+  iucn_maps_bc <- read_csv(here('_data/iucn_spp/iucn_to_worms_match.csv'), 
+                        show_col_types = FALSE) %>%
+    filter(mapped) %>%
+    filter(iucn_sid %in% iucn_spp_bc) %>%
+    select(iucn_sid, sciname, worms_name) %>%
+    distinct()
+  
+  write_csv(iucn_maps_bc, iucn_bc_f)
+}
+```
+
+## Use these to clean up the WoRMS and species info
+
+Clean up the exhaustive lists from the global project (`spp_vuln_mapping`) and save to a local file with just the BC species represented.  We will temp copy over data from the global project here, process it using scripts from the global project, save out locally, then delete the temp files.
+
+```{r}
+source(here('../spp_vuln_mapping/common_fxns.R'))
+library(oharac) ### for show_dupes() function used in the old scripts
+### temp copy over the WoRMS data into this project
+file.copy(from = here('../spp_vuln_mapping/_data/worms_taxa'),
+          to = here('_data'),
+          recursive = TRUE)
+file.copy(from = here('../spp_vuln_mapping/_data/iucn_spp/iucn_to_worms_match.csv'),
+          to = here('_data/iucn_spp'), overwrite = TRUE)
+dir.create(here('_output/func_entities'))
+file.copy(from = here('../spp_vuln_mapping/_output/func_entities/fe_trait_codes.csv'),
+          to = here('_output/func_entities/fe_trait_codes.csv'), overwrite = TRUE)
+file.copy(from = here('../spp_vuln_mapping/_output/func_entities/fe_species.csv'),
+          to = here('_output/func_entities/fe_species.csv'), overwrite = TRUE)
+```
+
+Using copied files, run the global version of `assemble_spp_info_df()` function, filter out for species in BC (with vulnerability scores and FE traits)
+
+``` {r}
+x <- assemble_spp_info_df() ### from here('../spp_vuln_mapping/common_fxns.R')
+
+### filter this down to just bc spp; write out; then delete the temp stuff!
+iucn_bc <- read_csv(iucn_bc_f); am_bc <- read_csv(am_bc_f)
+
+### filter to just bc spp, fix map filepaths
+x_bc <- x %>%
+  filter(( iucn_sid %in% iucn_bc$iucn_sid & src == 'iucn' ) | 
+         ( species %in% am_bc$sciname     & src == 'am' )) %>%
+  mutate(map_f = str_replace(map_f, 'spp_vuln_mapping', 'bc_spp_chi'),
+         map_f = str_replace(map_f, 'spp_maps_mol', 'spp_maps_bc'),
+         map_f = str_replace(map_f, '_spp_mol_', '_spp_bc_')) %>%
+  select(-sciname) %>%
+  distinct()
+
+# x_bc$map_f %>% head()
+# x_bc$species %>% n_distinct()
+
+write_csv(x_bc, here('_data/bc_spp_vuln_info.csv'))
+```
+
+## Remove temp files!
+
+All files can be recovered by copying from the global `spp_vuln_mapping` repository/projects.
+
+```{r}
+unlink(here('_data/worms_taxa'), recursive = TRUE)
+unlink(here('_data/iucn_spp/iucn_to_worms_match.csv'))
+unlink(here('_output/func_entities'), recursive = TRUE)
+```
+
