@@ -56,15 +56,14 @@ imp_stack_all <- rast(imp_fs) %>%
 
 nspp_r <- rast(here('_output/nspp_maps/species_richness.tif')) %>%
   setNames('nspp')
-meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>%
+meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>%
   setNames('meow')
 
-arctic_r <- rast(here('_spatial/ocean_polar_1km.tif')) %>%
-  mask(rast(here('_spatial/seaice_mask_0.8.tif')), inverse = TRUE) %>%
-  setNames('arctic_mask')
+bc_r <- rast(here('_spatial/ocean_bc_1km.tif')) %>%
+  setNames('bc_mask')
 
 full_stack <- c(imp_stack_all, nspp_r, meow_r) %>%
-  mask(arctic_r)
+  mask(bc_r)
 
 imp_df <- as.data.frame(full_stack)
 ```
@@ -89,39 +88,21 @@ imp_by_meow_nspp_wt_df <- imp_df %>%
 ## Examine impacts by ecoregion
 
 ```{r set up impacts by MEOW province and realm}
-arctic_meow_vec <- imp_by_meow_unwt_df$meow %>% unique()
+bc_meow_vec <- imp_by_meow_unwt_df$meow %>% unique()
 meow_prov_df <- foreign::read.dbf(here('_spatial/meow_rgns/meow_rgns.dbf')) %>%
   janitor::clean_names() %>%
-  filter(eco_code_x %in% arctic_meow_vec) %>%
-  arrange(prov_code) %>%
-  mutate(realm_lbl = str_replace(realm, 'Temperate', 'Temp'),
-         realm_lbl = str_replace(realm_lbl, 'Northern', 'N'),
-         realm_lbl = str_replace(realm_lbl, 'Western', 'W'),
-         realm_lbl = str_replace(realm_lbl, 'Eastern', 'E'),
-         realm_lbl = str_replace(realm_lbl, 'Central', 'C'),
-         realm_lbl = str_replace(realm_lbl, 'Atlantic', 'Atl'),
-         realm_lbl = str_replace(realm_lbl, 'Pacific', 'Pac'),
-         realm_lbl = fct_inorder(realm_lbl)) %>%
-  mutate(prov_lbl = str_replace(province, 'Temperate', 'Temp'),
-         prov_lbl = str_replace(prov_lbl, 'North(ern)?', 'N'),
-         prov_lbl = str_replace(prov_lbl, '(W|w)est(ern)?', 'W'),
-         prov_lbl = str_replace(prov_lbl, '(E|e)ast(ern)?(?!er)', 'E'),
-         prov_lbl = fct_inorder(prov_lbl)) %>%
-  mutate(meow_lbl = str_replace(ecoregion, 'Temperate', 'Temp'),
-         meow_lbl = str_replace(meow_lbl, 'North(ern)?', 'N'),
-         meow_lbl = str_replace(meow_lbl, '(W|w)est(ern)?', 'W'),
-         meow_lbl = str_replace(meow_lbl, '(S|s)outh(ern)?', 'S'),
-         meow_lbl = str_replace(meow_lbl, '(E|e)ast(ern)?(?!er)', 'E'),
-         meow_lbl = str_replace(meow_lbl, ' and ', ' & '),
-         meow_lbl = str_remove(meow_lbl, ' ?-.+'),
-         meow_lbl = ifelse(meow_lbl == 'N Sea', 'North Sea', meow_lbl))
+  filter(eco_code_x %in% bc_meow_vec) %>%
+  mutate(meow_lbl = str_replace(ecoregion, ' and ', ' & '),
+         meow_lbl = str_replace(meow_lbl, 'ver Coast', 'ver\nCoast'),
+         meow_lbl = str_replace(meow_lbl, 'gh/Ge', 'gh/\nGe'),
+         meow_lbl = str_replace(meow_lbl, 'can Pac', 'can\nPac'))
 
 meow_chi_df <- imp_by_meow_unwt_df %>%
   pivot_longer(cols = c(-meow, -ncell)) %>%
   group_by(meow) %>%
   summarize(chi = sum(value)) %>%
   left_join(meow_prov_df, by = c('meow' = 'eco_code_x')) %>%
-  arrange(prov_lbl, desc(chi)) %>%
+  arrange(desc(chi)) %>%
   mutate(meow_lbl = fct_inorder(meow_lbl))
 
 imp_plot_df <- imp_by_meow_unwt_df %>%
@@ -181,7 +162,7 @@ p <- ggplot(data = imp_plot_df, aes(x = imp, y = weighting)) +
         axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
-ggsave('ecoregion_impact_summary.png', height = 8, width = 6, units = 'in')
+ggsave('ecoregion_impact_summary.png', height = 2, width = 6, units = 'in')
 
 knitr::include_graphics('ecoregion_impact_summary.png')
 ```

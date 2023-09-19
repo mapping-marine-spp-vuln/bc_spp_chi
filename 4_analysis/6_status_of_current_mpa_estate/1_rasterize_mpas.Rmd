@@ -31,7 +31,7 @@ source(here('common_fxns.R'))
 
 # Summary
 
-Read in MPA dataset and rasterize to 1 km polar CRS.
+Read in MPA dataset and rasterize to 1 km bc CRS.
 
 # Data
 
@@ -43,38 +43,37 @@ Potential alternate source: https://missionblue.org/2022/06/mission-blue-protect
 
 ## identify geodatabase and layers
 
-Crop to Arctic, reproject to arctic CRS, write out for ease of use.
+Crop to bc, reproject to bc CRS, write out for ease of use.
 
-```{r WDPA geodatabase and layers write to polar}
-polar_wdpa_f <- here_anx('_spatial/wdpa_polar_2023.gpkg')
+```{r WDPA geodatabase and layers write to bc}
+bc_wdpa_f <- here_anx('_spatial/wdpa_bc_2023.gpkg')
 
-if(!file.exists(polar_wdpa_f)) {
+if(!file.exists(bc_wdpa_f)) {
   wdpa_gdb <- here_anx('../wdpa_jun2023.gdb')
 
   st_layers(wdpa_gdb)
   
   wdpa_sf <- read_sf(dsn = wdpa_gdb, layer = 'WDPA_poly_Jun2023')
   
-  arctic_sf <- create_arctic_sf()
+  bc_sf <- create_bc_sf()
   
   ### Crop to see what still exists post-crop
   sf_use_s2(FALSE)
-  wdpa_arctic_intsx <- st_crop(wdpa_sf, arctic_sf)
-  ### then filter the original sf down to just those objects (including
-  ### subarctic portions of polygons)
-  wdpa_arctic_sf <- wdpa_sf %>%
-    filter(WDPA_PID %in% wdpa_arctic_intsx$WDPA_PID) %>%
+  wdpa_bc_intsx <- st_crop(wdpa_sf, bc_sf)
+  ### then filter the original sf down to just those objects
+  wdpa_bc_sf <- wdpa_sf %>%
+    filter(WDPA_PID %in% wdpa_bc_intsx$WDPA_PID) %>%
     janitor::clean_names()
   
-  ocean_polar <- rast(here('_spatial/ocean_polar_1km.tif'))
-  wdpa_polar_sf <- wdpa_arctic_sf %>%
+  ocean_bc <- rast(here('_spatial/ocean_bc_1km.tif'))
+  wdpa_bc_sf <- wdpa_bc_sf %>%
     ### Filter to designated or reported marine area or GIS marine area
     filter(marine == 1 | rep_m_area > 0 | gis_m_area > 0) %>%
     ### note: transforming near poles may introduce weird distortions
     ### if adjacent vertices are not close to one another
-    st_transform(crs(ocean_polar))
+    st_transform(crs(ocean_bc))
   
-  st_write(wdpa_polar_sf, polar_wdpa_f)
+  st_write(wdpa_bc_sf, bc_wdpa_f)
 }
   
 ```
@@ -82,32 +81,32 @@ if(!file.exists(polar_wdpa_f)) {
 Read in shapefile, then rasterize.  Create rasters by IUCN protection category and no-take status.
 
 ```{r rasterize wdpa by iucn category}
-ocean_polar <- rast(here('_spatial/ocean_polar_1km.tif'))
-wdpa_polar_sf <- read_sf(polar_wdpa_f)
+ocean_bc <- rast(here('_spatial/ocean_bc_1km.tif'))
+wdpa_bc_sf <- read_sf(bc_wdpa_f)
 
-# names(wdpa_polar)
+# names(wdpa_bc)
 #  [1] "wdpaid"      "wdpa_pid"    "pa_def"      "name"        "orig_name"   "desig"       "desig_eng"  
 #  [8] "desig_type"  "iucn_cat"    "int_crit"    "marine"      "rep_m_area"  "gis_m_area"  "rep_area"   
 # [15] "gis_area"    "no_take"     "no_tk_area"  "status"      "status_yr"   "gov_type"    "own_type"   
 # [22] "mang_auth"   "mang_plan"   "verif"       "metadataid"  "sub_loc"     "parent_iso3" "iso3"       
 # [29] "supp_info"   "cons_obj"    "geom"
 
-# table(wdpa_polar_sf$iucn_cat)
+# table(wdpa_bc_sf$iucn_cat)
   #           Ia             Ib             II            III             IV Not Applicable 
   #          256             48             33             11            129              5 
   # Not Assigned   Not Reported              V             VI 
   #           86            232             22              9 
 
-# table(wdpa_polar_sf$no_take)
+# table(wdpa_bc_sf$no_take)
      # All           None Not Applicable   Not Reported 
      #   2              4            175            650 
 
-# table(wdpa_polar_sf$status)
+# table(wdpa_bc_sf$status)
 #  Designated Established   Inscribed 
 #         827           1           3 
 ### all these seem valid!
 
-wdpa_iucn_sf <- wdpa_polar_sf %>%
+wdpa_iucn_sf <- wdpa_bc_sf %>%
   mutate(iucn_cat = str_replace(iucn_cat, '^Ia|^Ib', 'I')) %>%
   mutate(iucn_num = as.integer(as.roman(iucn_cat)),
          iucn_num = ifelse(is.na(iucn_num), -1, iucn_num)) %>%
@@ -115,11 +114,11 @@ wdpa_iucn_sf <- wdpa_polar_sf %>%
                                 no_take == 'None' ~ 0,
                                 TRUE ~ -1))
 
-iucn_rast   <- rasterize(wdpa_iucn_sf, ocean_polar, field = 'iucn_num', fun = min)
+iucn_rast   <- rasterize(wdpa_iucn_sf, ocean_bc, field = 'iucn_num', fun = min)
 
 writeRaster(iucn_rast, here('_data/mpa_maps/iucn_category.tif'), overwrite = TRUE)
 
-plot(ocean_polar, col = 'grey60', axes = FALSE)
+plot(ocean_bc, col = 'grey60', axes = FALSE)
 plot(iucn_rast, add = TRUE, axes = FALSE, main = 'IUCN protected area category')
 ```
 

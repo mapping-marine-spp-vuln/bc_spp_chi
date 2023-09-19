@@ -21,7 +21,7 @@ format_map <- function(p) {
     geom_sf(data = rgn_sf, aes(geometry = geom), 
             color = 'red', fill = NA, size = .2, linetype = 'dashed') +
     geom_sf(data = land_sf, aes(geometry = geom), 
-            color = 'grey60', fill = 'grey90', size = .1) +
+            color = 'grey60', fill = 'grey96', size = .1) +
     geom_sf_text(data = meow_sf, aes(geometry = geometry, label = ecoregion),
                  size = 2.2, fontface = 'bold') +
     scale_x_continuous(expand = c(0, 0)) +

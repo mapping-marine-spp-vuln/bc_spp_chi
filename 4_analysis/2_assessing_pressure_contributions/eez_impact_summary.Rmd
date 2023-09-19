@@ -57,17 +57,15 @@ imp_stack_all[is.na(imp_stack_all)] <- 0
 
 nspp_r <- rast(here('_output/nspp_maps/species_richness.tif')) %>%
   setNames('nspp')
-eez_r <- rast(here('_spatial/eez_polar_1km.tif')) %>%
-  setNames('eez')
 
-arctic_r <- rast(here('_spatial/ocean_polar_1km.tif')) %>%
-  mask(rast(here('_spatial/seaice_mask_0.8.tif')), inverse = TRUE) %>%
-  setNames('arctic_mask')
+bc_r <- rast(here('_spatial/ocean_bc_1km.tif')) %>%
+  setNames('bc_mask')
 
-full_stack <- c(imp_stack_all, nspp_r, eez_r) %>%
-  mask(arctic_r)
+full_stack <- c(imp_stack_all, nspp_r) %>%
+  mask(bc_r)
 
-imp_df <- as.data.frame(full_stack)
+imp_df <- as.data.frame(full_stack) %>%
+  mutate(eez = 'British Columbia')
 ```
 
 ```{r}
@@ -90,19 +88,12 @@ imp_by_eez_nspp_wt_df <- imp_df %>%
 ## Examine impacts by EEZ
 
 ```{r set up impacts by EEZ}
-arctic_eez_vec <- imp_by_eez_unwt_df$eez %>% unique()
-eez_names_df <- read_csv(here('_spatial/eez_rgns/rgn_names_ohi.csv')) %>%
-  janitor::clean_names() %>%
-  filter(rgn_id %in% arctic_eez_vec) %>%
-  filter(rgn_id < 255)
 
 eez_chi_df <- imp_by_eez_unwt_df %>%
   pivot_longer(cols = c(-eez, -ncell)) %>%
   group_by(eez) %>%
   summarize(chi = sum(value)) %>%
-  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
-  arrange(rgn_label, desc(chi)) %>%
-  mutate(rgn_label = fct_inorder(rgn_label))
+  arrange(eez, desc(chi))
 
 imp_plot_df <- imp_by_eez_unwt_df %>%
   left_join(imp_by_eez_nspp_wt_df) %>%
@@ -111,9 +102,7 @@ imp_plot_df <- imp_by_eez_unwt_df %>%
   mutate(weighting = ifelse(str_detect(str, 'nspp'), 'species richness', 'unweighted'),
          weighting = factor(weighting, levels = c('species richness', 'unweighted')),
          str = str_remove_all(str, '_mean.*|_nspp.+')) %>%
-  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
-  mutate(rgn_label = fct_reorder(rgn_label, eez)) %>%
-  filter(!is.na(eez) & !is.na(rgn_label))
+  filter(!is.na(eez))
 ```
 
 
@@ -142,7 +131,6 @@ p <- ggplot(data = imp_plot_df, aes(x = imp, y = weighting)) +
   geom_col(aes(color = str), fill = NA,
            width = .8, size = 0.25,
            show.legend = FALSE) +
-  facet_grid(rows = vars(rgn_label), switch = 'y') +
   scale_fill_manual(values = pal, na.value = NA) +
   scale_color_manual(values = str_clrs, na.value = NA) +
   ### draw a vertical line for left-hand axis (impact = 0)
@@ -162,7 +150,7 @@ p <- ggplot(data = imp_plot_df, aes(x = imp, y = weighting)) +
         axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
-ggsave('eez_impact_summary.png', height = 3, width = 6, units = 'in')
+ggsave('eez_impact_summary.png', height = 1.5, width = 6, units = 'in')
 
 knitr::include_graphics('eez_impact_summary.png')
 ```

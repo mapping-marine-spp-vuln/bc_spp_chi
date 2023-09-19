@@ -41,7 +41,7 @@ Results from scripts in folder `2_process_spp_vuln_and_impacts`
 Read in the species impact summaries; summarize to climate and non-climate impacts, attach taxonomic groups, create boxplots - one for climate stressors, one for non-climate.  This summarization must be done on the server, as the individual species stressor files are stored there.
 
 ```{r}
-spp_imp_sum_file <- here('4_analysis/1_assessing_pressure_contributions/spp_impact_summary.csv')
+spp_imp_sum_file <- here('4_analysis/2_assessing_pressure_contributions/spp_impact_summary.csv')
 if(!file.exists(spp_imp_sum_file)) { ### unlink(spp_imp_sum_file)
   spp_fs_valid <- get_spp_info() %>%
     select(src, species, iucn_sid) %>%
@@ -86,7 +86,7 @@ if(!file.exists(spp_imp_sum_file)) { ### unlink(spp_imp_sum_file)
   write_csv(spp_imp_scores, spp_imp_sum_file)
 }
 
-spp_taxa_sum_file <- here('4_analysis/1_assessing_pressure_contributions/spp_taxa_summary.csv')
+spp_taxa_sum_file <- here('4_analysis/2_assessing_pressure_contributions/spp_taxa_summary.csv')
 ### unlink(spp_taxa_sum_file)
 if(!file.exists(spp_taxa_sum_file)) {
   spp_taxa <- get_spp_info() %>%
@@ -442,7 +442,7 @@ fig1 <- ggdraw() +
              size = 9, fontfamily = 'Helvetica', fontface = 'bold')
 
 
-fig1_file <- here('4_analysis/1_assessing_pressure_contributions', 
+fig1_file <- here('4_analysis/2_assessing_pressure_contributions', 
                   'spp_taxon_impact_summaries.png')
 ggsave(fig1_file, width = 12, height = 5, units = 'cm', dpi = 300)
 
@@ -454,7 +454,7 @@ fig1_fourpanel <- ggdraw() +
   draw_label('D', x = 0.03, y = .48, hjust = 0, vjust = 1,  
              size = 9, fontfamily = 'Helvetica', fontface = 'bold')
 
-fig1_fourpanel_file <- here('4_analysis/1_assessing_pressure_contributions', 
+fig1_fourpanel_file <- here('4_analysis/2_assessing_pressure_contributions', 
                             'spp_taxon_impact_summaries_fourpanel.png')
 ggsave(fig1_fourpanel_file, width = 12, height = 10, units = 'cm', dpi = 300)
 

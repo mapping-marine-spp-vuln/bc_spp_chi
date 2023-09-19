@@ -35,7 +35,7 @@ source(here('common_fxns.R'))
 
 Management effectiveness - how well would MPAs reduce CHI?  
 
-* Scenario 1: for each EEZ (political boundary) and MEOW (as a proxy to enforce representativeness), rank cells from greatest to least overall CHI. For the most impacted cell, drop all excludable pressures (i.e., set cell as fishery no-take and shipping exclusion zone), and recalculate new CHI. Repeat over cells until 30% of the EEZ/MEOW region is protected. Plot mean CHI as a function of protected area.
+* Scenario 1: for each MEOW (as a proxy to enforce representativeness), rank cells from greatest to least overall CHI. For the most impacted cell, drop all excludable pressures (i.e., set cell as fishery no-take and shipping exclusion zone), and recalculate new CHI. Repeat over cells until 30% of the EEZ/MEOW region is protected. Plot mean CHI as a function of protected area.
 * Scenario 2: Same as above, except prioritize protection based on greatest-to-least impacts from fishing and shipping. This should reduce pressures further than scenario 1.
 This MPA methodology ignores redistribution of excluded fishing effort or shipping routes, which are not realistic, but predicting new fishing effort or shipping routes seems out of scope.
 
@@ -52,13 +52,12 @@ Create a dataset of cells, grouped by EEZ and MEOW; for each group, rank cells f
 chi_spp_sum_f <- 'scenario1_chi_spp.csv'
 
 if(!file.exists(chi_spp_sum_f)) {
-  eez_r  <- rast(here('_spatial/eez_polar_1km.tif')) %>% 
+  eez_r  <- rast(here('_spatial/ocean_bc_1km.tif')) %>% 
     setNames('eez')
-  meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>% 
+  meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>% 
     setNames('meow')
   chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif')) %>% 
     setNames('chi_spp')
-  seaice_r <- rast(here('_spatial/seaice_mask_0.8.tif'))
   
   ### individual impact layers to subtract out of CHI for protection
   fishing_r <- rast(here_anx('_output/impact_maps/impact_maps_species', 
@@ -74,11 +73,9 @@ if(!file.exists(chi_spp_sum_f)) {
                            'impact_spp_fishing_benthic_dest_x_habitat_loss_degradation_mean.tif')) %>%
     setNames('trawl')
   
-  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r) %>%
-    mask(seaice_r, inverse = TRUE)
+  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r)
   
-  chi_df <- data.frame(values(chi_stack)) %>%
-    mutate(cell_id = 1:n()) %>%
+  chi_df <- as.data.frame(chi_stack, xy = TRUE) %>%
     filter(!is.na(eez) & !is.na(meow))
   
   chi_sum_df <- chi_df %>%
@@ -103,14 +100,13 @@ if(!file.exists(chi_spp_sum_f)) {
 chi_spp_map_f <- 'scenario1_chi_spp.tif'
 
 if(!file.exists(chi_spp_map_f)) {
-  eez_r  <- rast(here('_spatial/eez_polar_1km.tif')) %>% 
+  eez_r  <- rast(here('_spatial/ocean_bc_1km.tif')) %>% 
     setNames('eez')
-  meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>% 
+  meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>% 
     setNames('meow')
   chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif')) %>% 
     setNames('chi_spp')
-  seaice_r <- rast(here('_spatial/seaice_mask_0.8.tif'))
-  
+
   ### individual impact layers to subtract out of CHI for protection
   fishing_r <- rast(here_anx('_output/impact_maps/impact_maps_species', 
                              'impact_spp_biomass_removal_mean.tif')) %>%
@@ -125,8 +121,7 @@ if(!file.exists(chi_spp_map_f)) {
                            'impact_spp_fishing_benthic_dest_x_habitat_loss_degradation_mean.tif')) %>%
     setNames('trawl')
   
-  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r) %>%
-    mask(seaice_r, inverse = TRUE)
+  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r)
   
   chi_df <- data.frame(values(chi_stack)) %>%
     mutate(cell_id = 1:n()) %>%
@@ -139,10 +134,10 @@ if(!file.exists(chi_spp_map_f)) {
     ungroup() %>%
     filter(pct_prot <= 30)
   
-  chi_top30_r <- map_to_polar(chi_top30_df, which = 'pct_prot')
+  chi_top30_r <- map_to_bc(chi_top30_df, which = 'pct_prot')
   chi_top30_r[is.na(chi_top30_r)] <- 0
   chi_top30_r <- chi_top30_r %>%
-    mask(rast(here('_spatial/ocean_polar_1km.tif')))
+    mask(rast(here('_spatial/ocean_bc_1km.tif')))
   
   writeRaster(chi_top30_r, chi_spp_map_f)
 }
@@ -170,12 +165,8 @@ summarize_by_eez <- function(pct_prot, df) {
   return(eez_sum)
 }
 
-rgn_lbls <- read_csv(here('_spatial/eez_rgns/rgn_names_ohi.csv')) %>%
-  select(eez = rgn_id, rgn_label)
 eez_prot_sum <- lapply(1:100, summarize_by_eez, df = chi_sum_df) %>%
   bind_rows() %>%
-  left_join(rgn_lbls) %>%
-  mutate(rgn_label = fct_reorder(rgn_label, chi_mean)) %>%
   pivot_longer(names_to = 'scenario', values_to = 'chi_mean', starts_with('chi')) %>%
   mutate(scenario = ifelse(scenario == 'chi_mean', 'current', 'scenario 1'))
   
@@ -190,14 +181,13 @@ Similar to Scenario 1, except this time rank not by *total* CHI but CHI of impac
 chi_spp_sum2_f <- 'scenario2_chi_spp.csv'
 
 if(!file.exists(chi_spp_sum2_f)) {
-  eez_r  <- rast(here('_spatial/eez_polar_1km.tif')) %>% 
+  eez_r  <- rast(here('_spatial/ocean_bc_1km.tif')) %>% 
     setNames('eez')
-  meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>% 
+  meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>% 
     setNames('meow')
   chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif')) %>% 
     setNames('chi_spp')
-  seaice_r <- rast(here('_spatial/seaice_mask_0.8.tif'))
-  
+
   ### individual impact layers to subtract out of CHI for protection
   fishing_r <- rast(here_anx('_output/impact_maps/impact_maps_species', 
                              'impact_spp_biomass_removal_mean.tif')) %>%
@@ -212,8 +202,7 @@ if(!file.exists(chi_spp_sum2_f)) {
                            'impact_spp_fishing_benthic_dest_x_habitat_loss_degradation_mean.tif')) %>%
     setNames('trawl')
   
-  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r) %>%
-    mask(seaice_r, inverse = TRUE)
+  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r)
   
   chi_df <- data.frame(values(chi_stack)) %>%
     mutate(cell_id = 1:n()) %>%
@@ -244,13 +233,12 @@ if(!file.exists(chi_spp_sum2_f)) {
 chi_spp_map2_f <- 'scenario2_chi_spp.tif'
 
 if(!file.exists(chi_spp_map2_f)) {
-  eez_r  <- rast(here('_spatial/eez_polar_1km.tif')) %>% 
+  eez_r  <- rast(here('_spatial/ocean_bc_1km.tif')) %>% 
     setNames('eez')
-  meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>% 
+  meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>% 
     setNames('meow')
   chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif')) %>% 
     setNames('chi_spp')
-  seaice_r <- rast(here('_spatial/seaice_mask_0.8.tif'))
   
   ### individual impact layers to subtract out of CHI for protection
   fishing_r <- rast(here_anx('_output/impact_maps/impact_maps_species', 
@@ -266,8 +254,7 @@ if(!file.exists(chi_spp_map2_f)) {
                            'impact_spp_fishing_benthic_dest_x_habitat_loss_degradation_mean.tif')) %>%
     setNames('trawl')
   
-  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r) %>%
-    mask(seaice_r, inverse = TRUE)
+  chi_stack <- c(eez_r, meow_r, chi_spp_r, fishing_r, bycatch_r, shipping_r, trawl_r)
   
   chi_df <- data.frame(values(chi_stack)) %>%
     mutate(cell_id = 1:n()) %>%
@@ -282,10 +269,10 @@ if(!file.exists(chi_spp_map2_f)) {
     filter(pct_prot <= 30) %>%
     filter(excl_impacts > 0)
   
-  chi_top30_r <- map_to_polar(chi_top30_df, which = 'pct_prot')
+  chi_top30_r <- map_to_bc(chi_top30_df, which = 'pct_prot')
   chi_top30_r[is.na(chi_top30_r)] <- 0
   chi_top30_r <- chi_top30_r %>%
-    mask(rast(here('_spatial/ocean_polar_1km.tif')))
+    mask(rast(here('_spatial/ocean_bc_1km.tif')))
   
   writeRaster(chi_top30_r, chi_spp_map2_f, overwrite = TRUE)
 }
@@ -297,9 +284,9 @@ if(!file.exists(chi_spp_map2_f)) {
 chi_spp_unmitigated_f <- 'unmitigated_chi_spp.csv'
 
 if(!file.exists(chi_spp_unmitigated_f)) {
-  eez_r  <- rast(here('_spatial/eez_polar_1km.tif')) %>% 
+  eez_r  <- rast(here('_spatial/ocean_bc_1km.tif')) %>% 
     setNames('eez')
-  meow_r <- rast(here('_spatial/meow_rgns_polar_1km.tif')) %>% 
+  meow_r <- rast(here('_spatial/meow_rgns_bc_1km.tif')) %>% 
     setNames('meow')
   chi_spp_fs <- list.files(here_anx('_output/impact_maps/impact_maps_species'), 
                            pattern = 'mean.tif', full.names = TRUE)
@@ -307,10 +294,8 @@ if(!file.exists(chi_spp_unmitigated_f)) {
   unmit_nms <- str_remove_all(basename(unmit_fs), 'impact_spp_|_x_.+|_mean.tif')
   unmit_r <- rast(unmit_fs) %>% 
     setNames(unmit_nms)
-  seaice_r <- rast(here('_spatial/seaice_mask_0.8.tif'))
-  
-  chi_unmit_stack <- c(eez_r, meow_r, unmit_r) %>%
-    mask(seaice_r, inverse = TRUE)
+
+  chi_unmit_stack <- c(eez_r, meow_r, unmit_r)
   
   chi_unmit_df <- as.data.frame(chi_unmit_stack) 
   chi_unmit_filled_df <- chi_unmit_df %>%
@@ -335,13 +320,8 @@ To analyze by EEZ, take the cell-weighted mean of each MEOW within the EEZ (acco
 chi_sum2_df <- read_csv(chi_spp_sum2_f) %>%
   filter(eez < 255)
 
-rgn_lbls <- read_csv(here('_spatial/eez_rgns/rgn_names_ohi.csv')) %>%
-  select(eez = rgn_id, rgn_label)
 eez_prot_sum2 <- lapply(1:100, summarize_by_eez, df = chi_sum2_df) %>%
   bind_rows() %>%
-  left_join(rgn_lbls) %>%
-  mutate(rgn_label = factor(rgn_label, 
-                            levels = levels(eez_prot_sum$rgn_label))) %>%
   pivot_longer(names_to = 'scenario', values_to = 'chi_mean', starts_with('chi')) %>%
   mutate(scenario = ifelse(scenario == 'chi_mean', 'current', 'scenario 2')) %>%
   ### current should be identical, but dropping zero-value cells messes up the calc!
@@ -351,10 +331,6 @@ eez_prot_sum2 <- lapply(1:100, summarize_by_eez, df = chi_sum2_df) %>%
 
 ```{r}
 chi_unmit_df <- read_csv(chi_spp_unmitigated_f) %>%
-  filter(eez < 255) %>%
-  left_join(rgn_lbls) %>%
-  mutate(rgn_label = factor(rgn_label, 
-                            levels = levels(eez_prot_sum$rgn_label))) %>%
   mutate(xmin = 0, xmax = 100) %>%
   pivot_longer(c(xmin, xmax), values_to = 'x', names_to = 'drop_me') %>%
   select(-drop_me)
@@ -383,7 +359,6 @@ p <- ggplot(eez_prot_tot, aes(x = pct_prot, y = chi_mean)) +
   scale_color_manual(values = c('grey20', 'red', 'blue')) +
   scale_fill_manual(values = hcl.colors(5)[c(1, 3, 5, 2, 4)]) +
   ylim(c(0, NA)) +
-  facet_wrap(~ rgn_label) +
   theme_minimal() +
   theme(text = element_text(size = 8),
         panel.grid.minor = element_blank(),
@@ -391,7 +366,7 @@ p <- ggplot(eez_prot_tot, aes(x = pct_prot, y = chi_mean)) +
   labs(x = 'Percent of EEZ protected', y = 'Mean CHI_{spp}', fill = 'Climate stressors',
        color = 'Scenario', linetype = 'Scenario')
 
-ggsave('mpa_scenarios_0_100.png', width = 6, height = 4, dpi = 300)
+ggsave('mpa_scenarios_0_100.png', width = 6, height = 2.5, dpi = 300)
 knitr::include_graphics('mpa_scenarios_0_100.png')
 ```
 
@@ -436,8 +411,7 @@ chi_sum_df <- read_csv(chi_spp_sum_f) %>%
             ncell = sum(ncell)) %>%
   mutate(mean_adj_chi = mean_chi - mean_byc,
          pct_reduct = round(mean_byc / mean_chi * 100, 2)) %>%
-  left_join(rgn_lbls) %>%
-  select(rgn_label, mean_chi, mean_bycatch = mean_byc, a_km2 = ncell, pct_reduct) %>%
+  select(mean_chi, mean_bycatch = mean_byc, a_km2 = ncell, pct_reduct) %>%
   arrange(-pct_reduct)
 
 knitr::kable(chi_sum_df)

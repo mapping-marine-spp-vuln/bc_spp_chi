@@ -1,5 +1,5 @@
 ---
-title: "Compare cumulative impact within PACs across EEZs"
+title: "Compare cumulative impact within MPAs across EEZs"
 author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
 output: 
   html_document:
@@ -32,7 +32,7 @@ source(here('common_fxns.R'))
 
 # Summary
 
-Examine distribution of impacts within PACs, divided into EEZ - broken down by stressor, mean across cells, both unweighted and weighted by species richness.
+Examine distribution of impacts within MPAs - broken down by stressor, mean across cells, both unweighted and weighted by species richness.
 
 # Methods
 
@@ -42,7 +42,7 @@ Build up an analysis dataframe including impact maps for all stressors.  Include
 
 * Load all impact rasters, plus nspp raster and EEZ raster.
 * Crop out all cells not in EEZ
-* Group by EEZ and summarize both spp-weighted and unweighted mean impact values across all stressors.
+* Summarize both spp-weighted and unweighted mean impact values across all stressors.
 
 ```{r build impact dataframe}
 imp_fs <- list.files(here_anx('_output/impact_maps/impact_maps_species'), 
@@ -61,17 +61,14 @@ nspp_r <- rast(here('_output/nspp_maps/species_richness.tif')) %>%
   setNames('nspp')
 mpa_r  <- rast(here('_data/mpa_maps/iucn_category.tif')) %>%
   setNames('mpa')
-eez_r <- rast(here('_spatial/eez_polar_1km.tif')) %>%
-  setNames('eez')
 
-arctic_r <- rast(here('_spatial/ocean_polar_1km.tif')) %>%
-  mask(rast(here('_spatial/seaice_mask_0.8.tif')), inverse = TRUE) %>%
-  setNames('arctic_mask')
+bc_r <- rast(here('_spatial/ocean_bc_1km.tif')) %>%
+  setNames('bc_mask')
 ```
 
 ```{r combine all maps}
-full_stack <- c(imp_stack_all, nspp_r, eez_r, mpa_r) %>%
-  mask(arctic_r)
+full_stack <- c(imp_stack_all, nspp_r, mpa_r) %>%
+  mask(bc_r)
 
 imp_df <- as.data.frame(full_stack) %>%
   ### Set any protected cell to 1 (TRUE) and unprotected cell to 0 (FALSE)
@@ -81,54 +78,34 @@ imp_df <- as.data.frame(full_stack) %>%
 ### Summarize impacts across MPAs, EEZs
 
 ```{r}
-imp_by_eez_unwt_df <- imp_df %>%
+imp_unwt_df <- imp_df %>%
   select(-nspp) %>%
-  group_by(eez, mpa) %>%
+  group_by(mpa) %>%
   summarize(across(.cols = everything(), .fns = mean,
                    .names = '{.col}_mean', na.rm = TRUE),
             ncell = n())
 
-imp_by_eez_nspp_wt_df <- imp_df %>%
-  group_by(eez, mpa) %>%
+imp_nspp_wt_df <- imp_df %>%
+  group_by(mpa) %>%
   summarize(across(-nspp, 
                    .fns = ~ sum(.x * nspp, na.rm = TRUE) / sum(nspp[!is.na(.x)]),
                    .names = '{.col}_nspp_wt_mean'),
             nspp_mean = mean(nspp),
             ncell = n()) 
-```
 
-## Examine impacts by EEZ
-
-```{r set up impacts by EEZ}
-arctic_eez_vec <- imp_by_eez_unwt_df$eez %>% unique()
-eez_names_df <- read_csv(here('_spatial/eez_rgns/rgn_names_ohi.csv')) %>%
-  janitor::clean_names() %>%
-  filter(rgn_id %in% arctic_eez_vec) %>%
-  filter(rgn_id < 255)
-
-eez_chi_df <- imp_by_eez_unwt_df %>%
-  pivot_longer(cols = c(-eez, -ncell, -mpa)) %>%
-  group_by(eez) %>%
-  summarize(chi = sum(value)) %>%
-  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
-  arrange(rgn_label, desc(chi)) %>%
-  mutate(rgn_label = fct_inorder(rgn_label))
-
-imp_plot_df <- imp_by_eez_unwt_df %>%
-  left_join(imp_by_eez_nspp_wt_df) %>%
+imp_plot_df <- imp_unwt_df %>%
+  left_join(imp_nspp_wt_df) %>%
   select(-nspp_mean, -ncell) %>%
-  pivot_longer(c(-eez, -mpa), names_to = 'str', values_to = 'imp') %>%
+  pivot_longer(c(-mpa), names_to = 'str', values_to = 'imp') %>%
   mutate(weighting = ifelse(str_detect(str, 'nspp'), 'species richness', 'unweighted'),
          mpa = ifelse(mpa == 0, 'non-MPA', 'MPA'),
          mpa = factor(mpa, levels = c('MPA', 'non-MPA')),
-         str = str_remove_all(str, '_mean.*|_nspp.+')) %>%
-  left_join(eez_names_df, by = c('eez' = 'rgn_id')) %>%
-  mutate(rgn_label = fct_reorder(rgn_label, eez)) %>%
-  filter(!is.na(eez) & !is.na(rgn_label))
+         str = str_remove_all(str, '_mean.*|_nspp.+'))
 ```
 
 
-### Plot by EEZ, unweighted
+
+### Plot unweighted
 
 ```{r}
 pal_raw <- hcl.colors(n = 5, palette = 'viridis')[c(1, 3, 5, 2, 4)]
@@ -154,7 +131,6 @@ p <- ggplot(data = imp_plot_df %>%
   geom_col(aes(color = str), fill = NA,
            width = .8, size = 0.25,
            show.legend = FALSE) +
-  facet_grid(rows = vars(rgn_label), switch = 'y') +
   scale_fill_manual(values = pal, na.value = NA) +
   scale_color_manual(values = str_clrs, na.value = NA) +
   ### draw a vertical line for left-hand axis (impact = 0)
@@ -174,7 +150,7 @@ p <- ggplot(data = imp_plot_df %>%
         axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
-ggsave('mpa_impact_summary_unwt.png', height = 3, width = 6, units = 'in')
+ggsave('mpa_impact_summary_unwt.png', height = 2, width = 6, units = 'in')
 
 knitr::include_graphics('mpa_impact_summary_unwt.png')
 ```
@@ -192,7 +168,6 @@ p <- ggplot(data = imp_plot_df %>%
   geom_col(aes(color = str), fill = NA,
            width = .8, size = 0.25,
            show.legend = FALSE) +
-  facet_grid(rows = vars(rgn_label), switch = 'y') +
   scale_fill_manual(values = pal, na.value = NA) +
   scale_color_manual(values = str_clrs, na.value = NA) +
   ### draw a vertical line for left-hand axis (impact = 0)
@@ -212,7 +187,7 @@ p <- ggplot(data = imp_plot_df %>%
         axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
-ggsave('mpa_impact_summary_nsppwt.png', height = 3, width = 6, units = 'in')
+ggsave('mpa_impact_summary_nsppwt.png', height = 2, width = 6, units = 'in')
 
 knitr::include_graphics('mpa_impact_summary_nsppwt.png')
 ```
