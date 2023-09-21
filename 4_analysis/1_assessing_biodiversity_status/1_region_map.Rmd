@@ -71,8 +71,6 @@ knitr::include_graphics('rgn_map.png')
 chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif'))
 chi_spp_df <- as.data.frame(chi_spp_r, xy = TRUE)
 
-
-
 p <- ggplot() +
   geom_raster(data = chi_spp_df, aes(x = x, y = y, fill = chi_spp)) +
   scale_fill_viridis_c()
@@ -81,8 +79,38 @@ p1 <- p %>%
   format_map() +
   labs(fill = 'Cum.\nImpact')
 
+# ggsave(filename = 'chi_spp_map.png', 
+#        width = 6.75, height = 6, dpi = 300)
+# 
+# knitr::include_graphics('chi_spp_map.png')
+```
+
+## Cumulative impact histogram
+
+```{r}
+# chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif'))
+# chi_spp_df <- as.data.frame(chi_spp_r, xy = TRUE)
+
+h <- ggplot() +
+  geom_histogram(data = chi_spp_df, aes(x = chi_spp), 
+                 fill = hcl.colors(2)[1], color = 'grey30',
+                 binwidth = 0.02) +
+  theme_ohara() +
+  scale_y_continuous(breaks = 0:4 * 40000, labels = 0:4 * 40) +
+  labs(y = 'Area (x10³ km²)',
+       x = 'Cumulative impact')
+
+
+# ggsave('arctic_chi_histogram.png', height = 2, width = 4)
+```
+
+```{r}
+p_out <- ggdraw() +
+  draw_plot(p1, x = 0, y = .2, width = 1, height = .8) +
+  draw_plot(h, x = 0.025, y = 0, width = .85, height = .2)
+
 ggsave(filename = 'chi_spp_map.png', 
-       width = 6.75, height = 6, dpi = 300)
+       width = 6.5, height = 6.5, dpi = 300)
 
 knitr::include_graphics('chi_spp_map.png')
 ```

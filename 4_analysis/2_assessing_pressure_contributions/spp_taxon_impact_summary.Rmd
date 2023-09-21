@@ -393,7 +393,7 @@ panel_d <- ggplot(tx_imp_by_str, aes(x = mean_prop, y = taxon)) +
         axis.title.y = element_blank(),
         axis.text.x = element_text(size = 6),
         axis.text.y = element_text(face = 'bold', size = 6),
-        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
+        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0.5)) +
   labs(x = 'Proportion of cumulative impact', fill = 'Stressor', color = 'Stressor')
 ```
 
