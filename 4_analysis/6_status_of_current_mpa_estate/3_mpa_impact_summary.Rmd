@@ -21,12 +21,14 @@ output:
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 7)
 
 library(terra)
+library(sf)
 library(oharac)
 library(data.table)
 library(tidyverse)
 library(cowplot)
 library(here)
 source(here('common_fxns.R'))
+source(here('map_fxns.R'))
 
 ```
 
@@ -100,7 +102,8 @@ imp_plot_df <- imp_unwt_df %>%
   mutate(weighting = ifelse(str_detect(str, 'nspp'), 'species richness', 'unweighted'),
          mpa = ifelse(mpa == 0, 'non-MPA', 'MPA'),
          mpa = factor(mpa, levels = c('MPA', 'non-MPA')),
-         str = str_remove_all(str, '_mean.*|_nspp.+'))
+         str = str_remove_all(str, '_mean.*|_nspp.+')) %>%
+  left_join(str_clrs_df, by = c('str' = 'stressor'))
 ```
 
 
@@ -108,31 +111,18 @@ imp_plot_df <- imp_unwt_df %>%
 ### Plot unweighted
 
 ```{r}
-pal_raw <- hcl.colors(n = 5, palette = 'viridis')[c(1, 3, 5, 2, 4)]
-pal_mtx <- rbind(colorspace::darken(pal_raw, .3),
-                 colorspace::lighten(pal_raw, .2),
-                 colorspace::lighten(pal_raw, .6))
-pal <- c(pal_mtx)[-9]
+fill_pal <- str_clrs_df$str_fill
 
-cc_strs <- c('sst_extremes', 'ocean_acidification', 'sea_level_rise', 
-             'uv_radiation', 'sst_rise')
-all_strs <- imp_plot_df$str %>% unique()
-str_clrs <- rep(NA, length(all_strs)) %>%
-  setNames(all_strs)
-str_clrs[cc_strs] <- 'red'
+clr_pal  <- str_clrs_df$str_clr
 
 p <- ggplot(data = imp_plot_df %>%
               filter(weighting == 'unweighted'), aes(x = imp, y = mpa)) +
   theme_ohara() +
   ### Fill plus outlines for key
-  geom_col(aes(fill = str, color = str), 
-           width = .8, size = 0.25) +
-  ### overlay outlines without fill
-  geom_col(aes(color = str), fill = NA,
-           width = .8, size = 0.25,
-           show.legend = FALSE) +
-  scale_fill_manual(values = pal, na.value = NA) +
-  scale_color_manual(values = str_clrs, na.value = NA) +
+  geom_col(aes(fill = str_lbl, color = str_lbl), 
+           width = .8, size = 0.1) +
+  scale_fill_manual(values = fill_pal, na.value = NA) +
+  scale_color_manual(values = clr_pal, na.value = NA) +
   ### draw a vertical line for left-hand axis (impact = 0)
   geom_vline(xintercept = 0, color = 'black') +
   ### clean up theme
@@ -141,13 +131,11 @@ p <- ggplot(data = imp_plot_df %>%
         legend.text = element_text(size = 6),
         legend.title = element_text(face = 'bold', size = 6),
         legend.key.size = unit(.22, 'cm'),
-        strip.text.y.left = element_text(angle = 0, hjust = 1, face = 'bold'),
-        strip.background = element_blank(),
         panel.grid.major.x = element_blank(),
         axis.title.y = element_blank(),
         axis.text.y  = element_blank(),
         axis.text.x = element_text(size = 6),
-        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
+        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0.5)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
 ggsave('mpa_impact_summary_unwt.png', height = 2, width = 6, units = 'in')
@@ -157,19 +145,17 @@ knitr::include_graphics('mpa_impact_summary_unwt.png')
 
 NOTE: MPA on bottom, non-MPA on top.  MPAs tend to be close to shore so more direct human impacts etc.
 
+### Plot spp-richness-weighted
+
 ```{r}
 p <- ggplot(data = imp_plot_df %>%
               filter(weighting == 'species richness'), aes(x = imp, y = mpa)) +
   theme_ohara() +
   ### Fill plus outlines for key
-  geom_col(aes(fill = str, color = str), 
-           width = .8, size = 0.25) +
-  ### overlay outlines without fill
-  geom_col(aes(color = str), fill = NA,
-           width = .8, size = 0.25,
-           show.legend = FALSE) +
-  scale_fill_manual(values = pal, na.value = NA) +
-  scale_color_manual(values = str_clrs, na.value = NA) +
+  geom_col(aes(fill = str_lbl, color = str_lbl), 
+           width = .8, size = .1) +
+  scale_fill_manual(values = fill_pal, na.value = NA) +
+  scale_color_manual(values = clr_pal, na.value = NA) +
   ### draw a vertical line for left-hand axis (impact = 0)
   geom_vline(xintercept = 0, color = 'black') +
   ### clean up theme
@@ -178,13 +164,11 @@ p <- ggplot(data = imp_plot_df %>%
         legend.text = element_text(size = 6),
         legend.title = element_text(face = 'bold', size = 6),
         legend.key.size = unit(.22, 'cm'),
-        strip.text.y.left = element_text(angle = 0, hjust = 1, face = 'bold'),
-        strip.background = element_blank(),
         panel.grid.major.x = element_blank(),
         axis.title.y = element_blank(),
         axis.text.y  = element_blank(),
         axis.text.x = element_text(size = 6),
-        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0)) +
+        axis.title.x = element_text(face = 'bold', size = 6, hjust = 0.5)) +
   labs(x = 'Cumulative impact', fill = 'Stressor', color = 'Stressor')
   
 ggsave('mpa_impact_summary_nsppwt.png', height = 2, width = 6, units = 'in')

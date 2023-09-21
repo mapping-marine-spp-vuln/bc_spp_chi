@@ -28,6 +28,7 @@ library(tidyverse)
 library(cowplot)
 library(here)
 source(here('common_fxns.R'))
+source(here('map_fxns.R'))
 
 ```
 
@@ -338,9 +339,8 @@ chi_unmit_df <- read_csv(chi_spp_unmitigated_f) %>%
 chi_unmit_cc_df <- chi_unmit_df %>%
   filter(stressor %in% c('ocean_acidification', 'sst_extremes', 'sst_rise',
                          'sea_level_rise', 'uv_radiation')) %>%
-  mutate(stressor = str_to_sentence(str_replace_all(stressor, '_', ' ')),
-         stressor = str_replace(stressor, 'Sst', 'SST'),
-         stressor = str_replace(stressor, 'Uv', 'UV'))
+  left_join(str_clrs_df) %>%
+  mutate(str_lbl = fct_drop(str_lbl))
 ```
 
 ```{r plot it}
@@ -349,21 +349,29 @@ eez_prot_tot <- bind_rows(eez_prot_sum, eez_prot_sum2) %>%
   mutate(chi_mean = round(chi_mean, 6)) %>%
   distinct()
 
+fill_pal <- str_clrs_df %>%
+  filter(stressor %in% c('ocean_acidification', 'sst_extremes', 'sst_rise',
+                         'sea_level_rise', 'uv_radiation')) %>%
+  .$str_fill
+
 p <- ggplot(eez_prot_tot, aes(x = pct_prot, y = chi_mean)) +
+  ### area plot for climate stressors
   geom_area(data = chi_unmit_cc_df, 
-            aes(y = mean_imp, x = x, fill = stressor),
-            alpha = .5) +
-  geom_line(aes(linetype = scenario, color = scenario), size = .25) +
-  geom_vline(xintercept = 30, linetype = 'dotted', size = .25) +
+            aes(y = mean_imp, x = x, fill = str_lbl),
+            color = 'red', size = .1, alpha = .7) +
+  scale_fill_manual(values = fill_pal) +
+  ### line plot for scenarios
+  geom_line(aes(linetype = scenario, color = scenario), size = .5) +
+  geom_vline(xintercept = 30, linetype = 'dotted', size = .5) +
   scale_linetype_manual(values = c('solid', 'solid', 'dashed')) +
-  scale_color_manual(values = c('grey20', 'red', 'blue')) +
-  scale_fill_manual(values = hcl.colors(5)[c(1, 3, 5, 2, 4)]) +
+  scale_color_manual(values = c('grey20', 'magenta3', 'green4')) +
   ylim(c(0, NA)) +
   theme_minimal() +
   theme(text = element_text(size = 8),
         panel.grid.minor = element_blank(),
         legend.key.size = unit(.4, 'cm')) +
-  labs(x = 'Percent of EEZ protected', y = 'Mean CHI_{spp}', fill = 'Climate stressors',
+  labs(x = 'Percent of EEZ protected', 
+       y = latex2exp::TeX('Mean $CHI_{spp}$'), fill = 'Climate stressors',
        color = 'Scenario', linetype = 'Scenario')
 
 ggsave('mpa_scenarios_0_100.png', width = 6, height = 2.5, dpi = 300)

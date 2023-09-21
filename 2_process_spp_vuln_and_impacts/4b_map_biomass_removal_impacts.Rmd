@@ -120,7 +120,7 @@ out_stem <- here_anx('impact_maps_by_taxon/impacts_tx_biomass_removal',
 ### zxcv <- list.files(dirname(out_stem), pattern = 'imp_unwt', full.names = TRUE)
 ### unlink(zxcv)
 for(t in taxa) {
-  ### t <- taxa[1]
+  ### t <- taxa[6]
   tx_imp_df <- spp_info_df %>%
     filter(taxon == t) %>%
     select(species, v_score) %>%
@@ -170,7 +170,7 @@ for(t in taxa) {
 
   ### because failures might occur with summarizing a huge dataset,
   ### let's break this into chunks by cell_id
-  chunk_size <- 500000
+  chunk_size <- 200000
   base_r   <- rast(here('_spatial/ocean_bc_1km.tif'))
   n_cells  <- ncell(base_r)
   n_chunks <- ceiling(n_cells/chunk_size)

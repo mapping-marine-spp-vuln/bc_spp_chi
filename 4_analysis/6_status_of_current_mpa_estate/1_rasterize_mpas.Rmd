@@ -51,7 +51,7 @@ bc_wdpa_f <- here_anx('_spatial/wdpa_bc_2023.gpkg')
 if(!file.exists(bc_wdpa_f)) {
   wdpa_gdb <- here_anx('../wdpa_jun2023.gdb')
 
-  st_layers(wdpa_gdb)
+  # st_layers(wdpa_gdb)
   
   wdpa_sf <- read_sf(dsn = wdpa_gdb, layer = 'WDPA_poly_Jun2023')
   

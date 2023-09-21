@@ -20,11 +20,13 @@ output:
 
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
+library(sf)
 library(oharac)
 library(tidyverse)
 library(cowplot)
 library(here)
 source(here('common_fxns.R'))
+source(here('map_fxns.R'))
 
 ```
 
@@ -106,7 +108,6 @@ spp_taxa <- read_csv(spp_taxa_sum_file)
 spp_imp_scores <- read_csv(spp_imp_sum_file) %>%
   pivot_longer(names_to = 's_r', values_to = 'mean_imp', cols = -c(species, iucn_sid)) %>%
   mutate(stressor = str_remove(s_r, 'X.+'),
-         stressor = str_replace(stressor, 'biomass_removal', 'targeted_fishing'),
          range = str_remove(s_r, '.+X')) %>%
   select(-s_r) %>%
   mutate(mean_imp = ifelse(is.na(mean_imp) & range == 'full', 0, mean_imp)) %>%
@@ -337,15 +338,7 @@ spp_imp_strs_clean <- tx_imp_df %>%
   group_by(iucn_sid, species, stressor, range, taxon) %>%
   summarize(imp = sum(imp, na.rm = TRUE), .groups = 'drop') %>%
   left_join(spp_imp_tots) %>%
-  mutate(str_lbl = case_when(str_detect(stressor, 'bycatch') ~ 'bycatch',
-                             stressor == 'benth_str' ~ 'benthic structures',
-                             stressor == 'shipping_large' ~ 'shipping',
-                             stressor == 'fishing_benthic_dest' ~ 'benthic destr. fishing',
-                             stressor %in% c('light', 'nutrient') ~ paste(stressor, 'pollution'),
-                             TRUE ~ str_replace_all(stressor, '_', ' '))) %>%
-  mutate(str_lbl = str_to_sentence(str_lbl),
-         str_lbl = str_replace(str_lbl, 'Sst', 'SST'),
-         str_lbl = str_replace(str_lbl, 'Uv', 'UV'))
+  left_join(str_clrs_df, by = c('stressor' = 'stressor'))
 
 spp_imp_by_str <- spp_imp_strs_clean %>%
   filter(range == 'full') %>%
@@ -365,8 +358,7 @@ tx_imp_by_str <- spp_imp_by_str %>%
   summarize(mean_prop = sum(imp) / mean(tot_imp)) %>%
   ungroup() %>%
   ### arrange by taxon first ("all" on top), then descending order
-  arrange(desc(taxon), desc(mean_prop)) %>%
-  mutate(str_lbl = fct_inorder(str_lbl))
+  arrange(desc(taxon), desc(mean_prop))
   
 
 check2 <- tx_imp_by_str %>%
@@ -376,28 +368,17 @@ check2 <- tx_imp_by_str %>%
 ```
 
 ```{r}
-pal_raw <- hcl.colors(n = 5, palette = 'viridis')[c(1, 3, 5, 2, 4)]
-pal_mtx <- rbind(colorspace::darken(pal_raw, .3),
-                 colorspace::lighten(pal_raw, .2),
-                 colorspace::lighten(pal_raw, .6))
-pal <- c(pal_mtx)[-9]
 
-cc_strs <- c('SST extremes', 'Ocean acidification', 'Sea level rise', 
-             'UV radiation', 'SST rise')
-all_strs <- tx_imp_by_str$str_lbl %>% unique()
-str_clrs <- rep(NA, length(all_strs)) %>%
-  setNames(all_strs)
-str_clrs[cc_strs] <- 'red'
+fill_pal <- str_clrs_df$str_fill
+clr_pal  <- str_clrs_df$str_clr
+
 
 panel_d <- ggplot(tx_imp_by_str, aes(x = mean_prop, y = taxon)) +
   ### Fill plus outlines for key
   geom_col(aes(fill = str_lbl, color = str_lbl), width = .7, size = 0.25) +
-  ### overlay outlines without fill
-  geom_col(aes(color = str_lbl), fill = NA,
-           width = .7, size = 0.25, show.legend = FALSE) +
-  scale_fill_manual(values = pal, na.value = NA) +
+  scale_fill_manual(values = fill_pal, na.value = NA) +
                     #guide = guide_legend(ncol = 2)) +
-  scale_color_manual(values = str_clrs, na.value = NA) +
+  scale_color_manual(values = clr_pal, na.value = NA) +
   scale_x_continuous(expand = c(0, 0), limits = c(0, 1), 
                      breaks = seq(0, 1, .2)) +
   ### draw a vertical line for left-hand axis (impact = 0)
@@ -441,12 +422,6 @@ fig1 <- ggdraw() +
   draw_label('C', x = 0.69, y = .99, hjust = 0, vjust = 1,  
              size = 9, fontfamily = 'Helvetica', fontface = 'bold')
 
-
-fig1_file <- here('4_analysis/2_assessing_pressure_contributions', 
-                  'spp_taxon_impact_summaries.png')
-ggsave(fig1_file, width = 12, height = 5, units = 'cm', dpi = 300)
-
-knitr::include_graphics(fig1_file)
 
 fig1_fourpanel <- ggdraw() +
   draw_plot(fig1, x = 0, y = .5, height = .5, width = 1) +
