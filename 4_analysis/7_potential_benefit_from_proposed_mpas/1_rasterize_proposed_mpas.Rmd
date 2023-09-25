@@ -1,0 +1,107 @@
+---
+title: "Rasterize proposed MPAs"
+author: "*Compiled on `r date()` by `r Sys.info()['user']`*"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: yes
+    number_sections: true
+    theme: cerulean
+    highlight: haddock
+    includes: 
+      in_header: '~/github/src/templates/ohara_hdr.html'
+  pdf_document:
+    toc: true
+---
+
+``` {r setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 7)
+
+library(sf)
+library(terra)
+library(oharac)
+library(tidyverse)
+library(here)
+source(here('common_fxns.R'))
+
+```
+
+# Summary
+
+Read in proposed MPA (pmpa) dataset and rasterize to 1 km BC CRS.
+
+# Data
+
+Acquired from Meaghan Calcari Campbell, GBMF, 9/22/2023
+
+# Methods
+
+## identify geodatabase and layers
+
+Read in shapefile, which is already in BC Albers projection, then rasterize.
+
+```{r}
+ocean_bc <- rast(here('_spatial/ocean_bc_1km.tif'))
+### use path relative to Rmd, since shapefile folder is in same directory as Rmd
+gdb_pmpa <- here_anx('_spatial/Spatial_Q_Match_NAP_Jan_2023.gdb')
+
+x <- st_layers(gdb_pmpa)
+pmpa_bc_sf <- read_sf(dsn = gdb_pmpa, layer = 'Proposed_MPA_Network_NSB_Jan2023_PUBLIC') %>%
+  janitor::clean_names()
+
+pmpa_bc_sf <- vect(gdb_pmpa, layer = 'Proposed_MPA_Network_NSB_Jan2023_PUBLIC')
+
+
+# names(pmpa_bc_sf)
+#  [1] "UID"                                                       
+#  [2] "SUBREGION"                                                 
+#  [3] "Map_Label"                                                 
+#  [4] "S1_SpatialJ_Map_Label"                                     
+#  [5] "Prop_Desig_Tool"                                           
+#  [6] "Exist_AIWI_Type"                                           
+#  [7] "Category_Detailed"                                         
+#  [8] "Category_Simple"                                           
+#  [9] "Area_km2"                                                  
+# [10] "HU_Aquaculture_Finfish_Open_Net_Pens"                      
+# [11] "HU_Aquaculture_Shellfish_Beach_Seeding"                    
+# [12] "HU_Aquaculture_Shellfish_Off_bottom"                       
+# [13] "HU_Aquaculture_Marine_Plants"                              
+# [14] "HU_Commercial_Harvest_Bottom_Longline_Demersal_HookandLine"
+# [15] "HU_Commercial_Harvest_Bottom_Trawling"                     
+# [16] "HU_Commercial_Harvest_Shrimp_Trawling"                     
+# [17] "HU_Commercial_Harvest_Dive_w_PressureHose"                 
+# [18] "HU_Commercial_Harvest_Invertebrate_Trap"                   
+# [19] "HU_Commercial_Harvest_Sablefish_Trap"                      
+# [20] "HU_Commercial_Harvest_Intertidal_Handpick_Dig"             
+# [21] "HU_Commercial_Harvest_Gillnets"                            
+# [22] "HU_Commercial_Harvest_Pelagic_Midwater_Trawl"              
+# [23] "HU_Commercial_Harvest_Purse_Seine"                         
+# [24] "HU_Commercial_Harvest_Trolling_Salmon"                     
+# [25] "HU_Commercial_Harvest_Trolling_Tuna"                       
+# [26] "HU_Commercial_Harvest_Dive_Fishing"                        
+# [27] "HU_Recreational_Harvest_Demersal_HookandLine"              
+# [28] "HU_Recreational_Harvest_Invertebrate_Trap"                 
+# [29] "HU_Recreational_Harvest_Intertidal_Handpick_Dig"           
+# [30] "HU_Recreational_Harvest_Pelagic_Trolling_Rod_and_Reel"     
+# [31] "HU_Recreational_Harvest_Dive_Fishing"                      
+# [32] "HU_Forestry_Log_storage_and_Handling"                      
+# [33] "HU_Industrial_Projects_Oil_and_Gas"                        
+# [34] "HU_Industrial_Projects_Mining"                             
+# [35] "HU_Industrial_Projects_Dumping"                            
+# [36] "HU_Industrial_Projects_Other"                              
+# [37] "FSC_Access"                                                
+# [38] "Shape_Length"                                              
+# [39] "Shape_Area"                                                
+# [40] "Shape"     
+
+pmpa_rast <- rasterize(pmpa_bc_sf, ocean_bc, field = 'Category_Simple')
+
+writeRaster(pmpa_rast, here('_data/mpa_maps/gbmf_pmpa.tif'), overwrite = TRUE)
+
+plot(pmpa_rast, axes = FALSE,
+     main = 'Proposed and existing MPAs')
+```
+
