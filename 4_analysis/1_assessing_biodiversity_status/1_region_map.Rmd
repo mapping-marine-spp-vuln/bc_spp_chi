@@ -70,10 +70,15 @@ knitr::include_graphics('rgn_map.png')
 ```{r}
 chi_spp_r <- rast(here('_output/cumulative_impact_maps/chi_species.tif'))
 chi_spp_df <- as.data.frame(chi_spp_r, xy = TRUE)
+```
+
+```{r}
+pal <- hcl.colors(11)[c(1, 4, 7:11)]
 
 p <- ggplot() +
   geom_raster(data = chi_spp_df, aes(x = x, y = y, fill = chi_spp)) +
-  scale_fill_viridis_c()
+  # scale_fill_viridis_c() +
+  scale_fill_gradientn(colors = pal)
 
 p1 <- p %>%
   format_map() +
